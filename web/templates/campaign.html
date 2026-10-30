@@ -1,0 +1,48 @@
+{{define "title"}}{{.Data.Campaign.Name}} · Heimdall{{end}}
+{{define "content"}}
+{{with .Data.Campaign}}
+<h1>{{.Name}}</h1>
+<p class="meta">{{with .Family}}<span class="tag">{{.}}</span>{{end}} {{.Description}}</p>
+{{end}}
+
+<h2>Domains ({{len .Data.Domains}})</h2>
+<table>
+  <thead><tr><th>FQDN</th><th>Interval</th><th>Enabled</th><th>Source</th><th>Added</th>{{if .Can "analyst"}}<th></th>{{end}}</tr></thead>
+  <tbody>
+  {{range .Data.Domains}}
+    <tr>
+      <td><a href="/domains/{{.FQDN}}">{{.FQDN}}</a></td>
+      <td>{{.IntervalSeconds}}s</td>
+      <td>{{if .Enabled}}yes{{else}}<span class="muted">no</span>{{end}}</td>
+      <td>{{.Source}}</td>
+      <td class="nowrap">{{ts .AddedAt}}</td>
+      {{if $.Can "analyst"}}
+      <td class="actions">
+        <form method="post" action="/domains/{{.FQDN}}/toggle">
+          {{template "csrf" $}}
+          <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+        </form>
+        <button class="danger" hx-delete="/domains/{{.FQDN}}" hx-confirm="Delete {{.FQDN}}?" hx-target="closest tr" hx-swap="outerHTML">Delete</button>
+      </td>
+      {{end}}
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="empty">No domains.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+{{if .Can "analyst"}}
+<h2>Add domains</h2>
+<form method="post" action="/campaigns/{{.Data.Campaign.ID}}/domains">
+  {{template "csrf" .}}
+  <textarea name="fqdns" rows="5" placeholder="one FQDN per line, # for comments" required></textarea>
+  <label>Interval (s) <input name="interval" type="number" min="10" value="300"></label>
+  <button type="submit">Add</button>
+</form>
+{{end}}
+
+<h2>Recent events</h2>
+{{template "events_table" .Data.Events}}
+<p><a href="/events?campaign={{.Data.Campaign.Name}}">All events for this campaign</a></p>
+{{end}}

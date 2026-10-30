@@ -1,0 +1,70 @@
+{{define "title"}}{{.Data.FQDN}} · Heimdall{{end}}
+{{define "content"}}
+<h1>{{.Data.FQDN}}</h1>
+{{with .Data.Domain}}
+<p class="meta">
+  {{if .Campaign}}Campaign <a href="/campaigns/{{.CampaignID}}">{{.Campaign}}</a> ·{{end}}
+  every {{.IntervalSeconds}}s · {{if .Enabled}}enabled{{else}}<span class="muted">disabled</span>{{end}}
+  {{with .Source}}· source {{.}}{{end}}
+</p>
+{{else}}
+<p class="meta muted">Not in the watchlist.</p>
+{{end}}
+
+<h2>Current state</h2>
+<table>
+  <thead><tr><th>QType</th><th>Resolver</th><th>Rcode</th><th>TTL</th><th>Rdata</th><th>Seen (UTC)</th></tr></thead>
+  <tbody>
+  {{range .Data.Current}}
+    <tr>
+      <td>{{.QType}}</td>
+      <td>{{.Resolver}}</td>
+      <td><span class="rcode rcode-{{.Rcode}}">{{.Rcode}}</span></td>
+      <td>{{.TTL}}</td>
+      <td>{{range .Rdata}}<code>{{.}}</code><br>{{end}}</td>
+      <td class="nowrap">{{ts .TS}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="empty">No observation in the last 7 days.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Change timeline</h2>
+<table>
+  <thead><tr><th>Time (UTC)</th><th>QType</th><th>Resolver</th><th>Rcode</th><th>Added</th><th>Removed</th><th>TTL</th></tr></thead>
+  <tbody>
+  {{range .Data.Changes}}
+    <tr>
+      <td class="nowrap">{{ts .TS}}</td>
+      <td>{{.QType}}</td>
+      <td>{{.Resolver}}</td>
+      <td>{{if ne .PrevRcode .NewRcode}}{{.PrevRcode}} → {{end}}{{.NewRcode}}</td>
+      <td class="added">{{range .Added}}<code>{{.}}</code><br>{{end}}</td>
+      <td class="removed">{{range .Removed}}<code>{{.}}</code><br>{{end}}</td>
+      <td>{{if ne .PrevTTL .NewTTL}}{{.PrevTTL}} → {{end}}{{.NewTTL}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7" class="empty">No changes recorded.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Passive DNS</h2>
+<table>
+  <thead><tr><th>Type</th><th>Rdata</th><th>First seen (UTC)</th><th>Last seen (UTC)</th><th>Count</th></tr></thead>
+  <tbody>
+  {{range .Data.PDNS}}
+    <tr>
+      <td>{{.RRType}}</td>
+      <td><code>{{.RData}}</code></td>
+      <td class="nowrap">{{ts .FirstSeen}}</td>
+      <td class="nowrap">{{ts .LastSeen}}</td>
+      <td>{{.Count}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No passive DNS records.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

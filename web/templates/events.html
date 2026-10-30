@@ -1,0 +1,24 @@
+{{define "title"}}Events · Heimdall{{end}}
+{{define "content"}}
+<h1>Events</h1>
+<form class="inline" method="get" action="/events" hx-get="/events" hx-target="#events" hx-push-url="true">
+  <label>Kind
+    <select name="kind">
+      <option value="">all</option>
+      {{range .Data.Kinds}}<option value="{{.}}" {{if eq . $.Data.Filter.Kind}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Campaign
+    <select name="campaign">
+      <option value="">all</option>
+      {{range .Data.Campaigns}}<option value="{{.Name}}" {{if eq .Name $.Data.Filter.Campaign}}selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label>Since <input name="since" value="{{.Data.Since}}" placeholder="24h, 2026-01-31 or RFC 3339"></label>
+  <label>Until <input name="until" value="{{.Data.Until}}" placeholder="optional"></label>
+  <button type="submit">Filter</button>
+</form>
+<div id="events">
+{{template "events_table" .Data.Events}}
+</div>
+{{end}}
