@@ -65,7 +65,7 @@ func run() error {
 
 	jobs := make(chan scheduler.Job, cfg.Workers*4)
 	items := make(chan ch.Item, cfg.BatchSize)
-	sched := scheduler.New(resolver.QTypes, jobs)
+	sched := scheduler.New(resolver.QTypes, cfg.FirstRunSpread, jobs)
 	limits := &limiters{m: map[string]*rate.Limiter{}}
 	var classes atomic.Pointer[[]gjallarhorn.NSClass]
 
