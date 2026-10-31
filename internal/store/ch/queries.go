@@ -75,6 +75,46 @@ func (s *Store) pdns(ctx context.Context, where string, arg any, limit int) ([]P
 	return out, rows.Err()
 }
 
+// RdataSharing counts, for each value, the distinct pdns owner names that
+// held it, ignoring the names in exclude. Values held by no counted name are
+// absent.
+func (s *Store) RdataSharing(ctx context.Context, values, exclude []string) (map[string]uint64, error) {
+	out := make(map[string]uint64, len(values))
+	if len(values) == 0 {
+		return out, nil
+	}
+	in := func(n int) string { return strings.TrimSuffix(strings.Repeat("?, ", n), ", ") }
+	args := make([]any, 0, len(values)+len(exclude))
+	for _, v := range values {
+		args = append(args, v)
+	}
+	where := `rdata IN (` + in(len(values)) + `)`
+	if len(exclude) > 0 {
+		where += ` AND rrname NOT IN (` + in(len(exclude)) + `)`
+		for _, v := range exclude {
+			args = append(args, v)
+		}
+	}
+	rows, err := s.conn.Query(ctx, `
+		SELECT rdata, uniqExact(rrname) AS names
+		FROM pdns
+		WHERE `+where+`
+		GROUP BY rdata`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v string
+		var n uint64
+		if err := rows.Scan(&v, &n); err != nil {
+			return nil, err
+		}
+		out[v] = n
+	}
+	return out, rows.Err()
+}
+
 type Current struct {
 	QType    string
 	Resolver string

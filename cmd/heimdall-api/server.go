@@ -25,7 +25,7 @@ import (
 
 const maxBody = 1 << 20
 
-var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "events", "admin"}
+var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "events", "admin"}
 
 type server struct {
 	cfg   *config.Config
@@ -93,6 +93,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /domains/{fqdn}", page(viewer, s.domainPage))
 	mux.Handle("POST /domains/{fqdn}/toggle", page(analyst, s.toggleDomain))
 	mux.Handle("DELETE /domains/{fqdn}", page(analyst, s.deleteDomain))
+	mux.Handle("GET /rdata/{value...}", page(viewer, s.rdataPage))
 	mux.Handle("GET /events", page(viewer, s.eventsPage))
 	mux.Handle("GET /admin", page(admin, s.adminPage))
 	mux.Handle("POST /admin/resolvers", page(admin, s.createResolver))
