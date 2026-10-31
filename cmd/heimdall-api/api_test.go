@@ -67,3 +67,46 @@ func TestDomainsJSON(t *testing.T) {
 		t.Errorf("empty list = %s, want []", got)
 	}
 }
+
+func TestSearchIPGrouping(t *testing.T) {
+	names, values := groupRecords([]ch.PDNSRecord{
+		{RRName: "a.example", RRType: "A", RData: "192.0.2.1", FirstSeen: t0, LastSeen: t0.Add(time.Hour), Count: 3},
+		{RRName: "b.example", RRType: "A", RData: "192.0.2.1", FirstSeen: t0.Add(-time.Hour), LastSeen: t0.Add(2 * time.Hour), Count: 1},
+		{RRName: "a.example", RRType: "TXT", RData: "192.0.2.1", FirstSeen: t0.Add(-2 * time.Hour), LastSeen: t0, Count: 2},
+	})
+	if len(names) != 2 || names[0].RRName != "b.example" || names[1].RRName != "a.example" {
+		t.Fatalf("names = %+v, want b.example then a.example", names)
+	}
+	if a := names[1]; strings.Join(a.RRTypes, ",") != "A,TXT" || a.Count != 5 || !a.FirstSeen.Equal(t0.Add(-2*time.Hour)) || !a.LastSeen.Equal(t0.Add(time.Hour)) {
+		t.Errorf("a.example = %+v", a)
+	}
+	if len(values) != 2 || values[0].RRType != "A" || values[0].Names != 2 || values[1].RRType != "TXT" || values[1].Names != 1 {
+		t.Errorf("values = %+v", values)
+	}
+}
+
+func TestSearchJSON(t *testing.T) {
+	cet := time.FixedZone("CET", 3600)
+	d := pg.Domain{FQDN: "node1.otax.fun", Campaign: "spynote", IntervalSeconds: 300, Enabled: true, Source: "web:alice", AddedAt: t0.In(cet)}
+	v := searchView{
+		Query: "otax", Kind: "pattern", Limit: 200,
+		Domains: []pg.Domain{d},
+		Names: []nameRow{
+			{NameMatch: ch.NameMatch{RRName: "node1.otax.fun", RRTypes: []string{"A"}, FirstSeen: t0.In(cet), LastSeen: t0.In(cet), Count: 2}, Domain: &d},
+		},
+		Values:    []ch.ValueMatch{{RData: "ns1.otax.fun", RRType: "NS", Names: 3, FirstSeen: t0.In(cet), LastSeen: t0.In(cet)}},
+		Truncated: searchTruncated{Values: true},
+	}
+	want := `{"query":"otax","kind":"pattern",` +
+		`"domains":[{"fqdn":"node1.otax.fun","campaign":"spynote","interval_seconds":300,"enabled":true,"source":"web:alice","added_at":"2026-03-01T12:00:00Z"}],` +
+		`"names":[{"rrname":"node1.otax.fun","rrtypes":["A"],"first_seen":"2026-03-01T12:00:00Z","last_seen":"2026-03-01T12:00:00Z","count":2,"watched":true,"campaign":"spynote"}],` +
+		`"values":[{"rdata":"ns1.otax.fun","rrtype":"NS","names":3,"first_seen":"2026-03-01T12:00:00Z","last_seen":"2026-03-01T12:00:00Z"}],` +
+		`"truncated":{"domains":false,"names":false,"values":true}}`
+	if got := encode(t, toSearchJSON(v)); got != want {
+		t.Errorf("search =\n%s\nwant\n%s", got, want)
+	}
+	if got := encode(t, toSearchJSON(searchView{Query: "x.example", Kind: "exact"})); got !=
+		`{"query":"x.example","kind":"exact","domains":[],"names":[],"values":[],"truncated":{"domains":false,"names":false,"values":false}}` {
+		t.Errorf("empty search = %s", got)
+	}
+}

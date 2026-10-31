@@ -40,18 +40,26 @@ func testStore(t *testing.T) *Store {
 	}
 
 	db := fmt.Sprintf("heimdall_it_%d", time.Now().UnixNano())
-	ddl, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "clickhouse", "init.sql"))
+	deploy := filepath.Join("..", "..", "..", "deploy", "clickhouse")
+	// Migrations run on top of init.sql, which must already include them.
+	migrations, err := filepath.Glob(filepath.Join(deploy, "migrations", "*.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := strings.ReplaceAll(string(ddl), "heimdall.", db+".")
-	script = strings.ReplaceAll(script, "IF NOT EXISTS heimdall;", "IF NOT EXISTS "+db+";")
-	for _, stmt := range strings.Split(script, ";") {
-		if isBlank(stmt) {
-			continue
+	for _, file := range append([]string{filepath.Join(deploy, "init.sql")}, migrations...) {
+		ddl, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if err := admin.Exec(ctx, stmt); err != nil {
-			t.Fatalf("init.sql: %v\n%s", err, stmt)
+		script := strings.ReplaceAll(string(ddl), "heimdall.", db+".")
+		script = strings.ReplaceAll(script, "IF NOT EXISTS heimdall;", "IF NOT EXISTS "+db+";")
+		for _, stmt := range strings.Split(script, ";") {
+			if isBlank(stmt) {
+				continue
+			}
+			if err := admin.Exec(ctx, stmt); err != nil {
+				t.Fatalf("%s: %v\n%s", filepath.Base(file), err, stmt)
+			}
 		}
 	}
 	t.Cleanup(func() {
@@ -132,6 +140,81 @@ func TestAnswersFeedPDNSByOwner(t *testing.T) {
 		if r.RRType != want.Type || r.RData != want.Value || r.Count != 1 || !r.FirstSeen.Equal(ts) || !r.LastSeen.Equal(ts) {
 			t.Errorf("pdns %s = %+v, want %s %s seen once at %s", want.Name, r, want.Type, want.Value, ts)
 		}
+	}
+}
+
+func TestAuthorityFeedsPDNSByZone(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	soa := "ns1.syamcloud.com hostmaster.syamcloud.com 2026103101 7200 3600 1209600 300"
+	obs := resolver.Observation{
+		TS: ts, Domain: "proxy.syamcloud.com", QType: "SOA", Resolver: "9.9.9.9:53", Rcode: "NOERROR",
+		Rdata: []string{}, Answers: []resolver.Answer{},
+		Authority: []resolver.Answer{
+			{Name: "syamcloud.com", Type: "NS", Value: "ns1.example.net"},
+			{Name: "syamcloud.com", Type: "SOA", Value: soa},
+		},
+		Zone:       "syamcloud.com",
+		AnswerHash: resolver.AnswerHash("NOERROR", nil),
+	}
+	nx := obs
+	nx.TS, nx.Domain, nx.Rcode = ts.Add(time.Minute), "gone.syamcloud.com", "NXDOMAIN"
+	if err := s.InsertObservations(ctx, []resolver.Observation{obs, nx}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	recs, err := s.PDNSByName(ctx, "syamcloud.com", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []resolver.Answer
+	for _, r := range recs {
+		got = append(got, resolver.Answer{Name: r.RRName, Type: r.RRType, Value: r.RData})
+		if r.Count != 1 || !r.FirstSeen.Equal(ts) || !r.LastSeen.Equal(ts) {
+			t.Errorf("pdns %+v: want seen once at %s, NXDOMAIN ignored", r, ts)
+		}
+	}
+	slices.SortFunc(got, func(a, b resolver.Answer) int { return strings.Compare(a.Type, b.Type) })
+	if !slices.Equal(got, obs.Authority) {
+		t.Fatalf("pdns syamcloud.com = %+v, want %+v", got, obs.Authority)
+	}
+	if recs, err := s.PDNSByName(ctx, obs.Domain, 10); err != nil || len(recs) != 0 {
+		t.Fatalf("pdns %s = %+v, %v; want nothing", obs.Domain, recs, err)
+	}
+}
+
+func TestSearchNamesAndValues(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	answer := func(name, typ, value string) resolver.Observation {
+		return resolver.Observation{
+			TS: ts, Domain: name, QType: typ, Resolver: "9.9.9.9:53", Rcode: "NOERROR", Rdata: []string{value},
+			Answers: []resolver.Answer{{Name: name, Type: typ, Value: value}},
+		}
+	}
+	if err := s.InsertObservations(ctx, []resolver.Observation{
+		answer("node_1.otax.fun", "A", "192.0.2.1"),
+		answer("node_1.otax.fun", "AAAA", "2001:db8::1"),
+		answer("nodex1.otax.fun", "A", "192.0.2.1"),
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	names, err := s.SearchNames(ctx, `%NODE\_1%`, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0].RRName != "node_1.otax.fun" || !slices.Equal(names[0].RRTypes, []string{"A", "AAAA"}) || names[0].Count != 2 {
+		t.Fatalf("names = %+v, want node_1.otax.fun only, A and AAAA, count 2", names)
+	}
+	values, err := s.SearchValues(ctx, `192.0.2.%`, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].RData != "192.0.2.1" || values[0].RRType != "A" || values[0].Names != 2 {
+		t.Fatalf("values = %+v, want 192.0.2.1 A held by 2 names", values)
 	}
 }
 

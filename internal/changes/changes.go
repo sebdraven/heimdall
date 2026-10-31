@@ -36,6 +36,10 @@ func Transient(rcode string) bool {
 // so a value is only removed after RemovalGrace consecutive absences.
 var multiValued = map[string]bool{"A": true, "AAAA": true, "NS": true, "MX": true, "TXT": true}
 
+// ZonePrefix marks the tuples of a zone, tracked apart from the watched name
+// of the same spelling.
+const ZonePrefix = "zone:"
+
 type Key struct {
 	Domain   string
 	QType    string

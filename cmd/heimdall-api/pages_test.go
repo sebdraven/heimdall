@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -134,5 +135,190 @@ func TestRenderDomainLinks(t *testing.T) {
 	}
 	if n := strings.Count(body, `class="badge"`); n != 1 {
 		t.Errorf("%d badges, want 1 (none for values held by no other name)", n)
+	}
+}
+
+func TestLikePattern(t *testing.T) {
+	tests := []struct {
+		q    string
+		want string
+		ok   bool
+	}{
+		{"otax", "%otax%", true},
+		{"*.otax.fun", "%.otax.fun", true},
+		{"node*", "node%", true},
+		{"node*.otax.*", "node%.otax.%", true},
+		{"a_b%c", `%a\_b\%c%`, true},
+		{"_dmarc*", `\_dmarc%`, true},
+		{`a\b`, `%a\\b%`, true},
+		{"ab", "", false},
+		{"*a*b*", "", false},
+		{"***", "", false},
+		{"é.f", "%é.f%", true},
+	}
+	for _, tt := range tests {
+		got, ok := likePattern(tt.q)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("likePattern(%q) = %q, %v; want %q, %v", tt.q, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func searchFixture(limit int) searchView {
+	campaign := int64(7)
+	spynote := pg.Domain{FQDN: "node1.otax.fun", CampaignID: &campaign, Campaign: "spynote", IntervalSeconds: 300, Enabled: true}
+	return searchView{
+		Query: "otax", Kind: "pattern", Limit: limit,
+		Domains: []pg.Domain{spynote, {FQDN: "node2.otax.fun", IntervalSeconds: 600}},
+		Names: []nameRow{
+			{NameMatch: ch.NameMatch{RRName: "node1.otax.fun", RRTypes: []string{"A", "NS"}, FirstSeen: t0, LastSeen: t0.Add(time.Hour), Count: 12}, Domain: &spynote},
+			{NameMatch: ch.NameMatch{RRName: "cdn.otax.fun", RRTypes: []string{"CNAME"}, FirstSeen: t0, LastSeen: t0, Count: 1}},
+		},
+		Values: []ch.ValueMatch{
+			{RData: "ns1.otax.fun", RRType: "NS", Names: 2, FirstSeen: t0, LastSeen: t0.Add(time.Hour)},
+		},
+		Truncated: searchTruncated{Names: limit == 2},
+	}
+}
+
+func TestRenderSearchPage(t *testing.T) {
+	body := renderPage(t, "search", searchFixture(searchLimit))
+	for _, want := range []string{
+		"<h2>Watchlist</h2>", "<h2>Passive DNS names</h2>", "<h2>Passive DNS values</h2>",
+		`href="/domains/node1.otax.fun"`, `href="/domains/node2.otax.fun"`, `href="/domains/cdn.otax.fun"`,
+		`href="/campaigns/7"`, ">spynote<", "A, NS", "600s",
+		`href="/rdata/ns1.otax.fun"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("search page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "Limited to") {
+		t.Error("truncation notice shown for a complete result")
+	}
+
+	body = renderPage(t, "search", searchFixture(2))
+	if !strings.Contains(body, "Limited to the 2 most recently seen names.") {
+		t.Error("names truncation notice missing")
+	}
+	if n := strings.Count(body, "Limited to"); n != 1 {
+		t.Errorf("%d truncation notices, want 1", n)
+	}
+
+	body = renderPage(t, "search", searchView{Query: "ab", TooShort: true, Limit: searchLimit})
+	if !strings.Contains(body, "at least 3 characters") || strings.Contains(body, "<table>") {
+		t.Error("too short query: message missing or tables shown")
+	}
+
+	body = renderPage(t, "search", searchView{Limit: searchLimit})
+	if strings.Contains(body, "<table>") || strings.Contains(body, "at least 3 characters") {
+		t.Error("empty query renders results or an error")
+	}
+}
+
+func TestCurrentZoneRecords(t *testing.T) {
+	soa := func(serial string, last time.Time) ch.PDNSRecord {
+		return ch.PDNSRecord{RRName: "syamcloud.com", RRType: "SOA", RData: "ns1.syamcloud.com h.syamcloud.com " + serial + " 7200 3600 1209600 300", LastSeen: last}
+	}
+	ns := func(v string, last time.Time) ch.PDNSRecord {
+		return ch.PDNSRecord{RRName: "syamcloud.com", RRType: "NS", RData: v, LastSeen: last}
+	}
+	now := t0.Add(48 * time.Hour)
+	got := currentZoneRecords([]ch.PDNSRecord{
+		soa("1", t0), soa("2", now), ns("old.example.net", t0), ns("ns2.example.net", now.Add(-10*time.Minute)), ns("ns1.example.net", now),
+		{RRName: "syamcloud.com", RRType: "A", RData: "192.0.2.1", LastSeen: now},
+	})
+	var order []string
+	for _, r := range got {
+		order = append(order, r.RRType+"/"+strings.Fields(r.RData)[0])
+	}
+	if got, want := strings.Join(order, " "), "NS/ns1.example.net NS/ns2.example.net SOA/ns1.syamcloud.com"; got != want {
+		t.Errorf("current = %s, want %s", got, want)
+	}
+	if len(got) == 3 && !strings.Contains(got[2].RData, " 2 ") {
+		t.Errorf("SOA = %q, want serial 2", got[2].RData)
+	}
+	if got := currentZoneRecords([]ch.PDNSRecord{{RRType: "A", RData: "192.0.2.1"}}); len(got) != 0 {
+		t.Errorf("no NS or SOA: %+v", got)
+	}
+}
+
+func TestRenderDomainZone(t *testing.T) {
+	data := map[string]any{
+		"FQDN": "proxy.syamcloud.com", "Domain": (*pg.Domain)(nil), "Sharing": map[string]uint64{},
+		"Zone": &zoneView{Name: "syamcloud.com", Records: []ch.PDNSRecord{
+			{RRName: "syamcloud.com", RRType: "NS", RData: "ns1.example.net", LastSeen: t0},
+			{RRName: "syamcloud.com", RRType: "SOA", RData: "ns1.syamcloud.com h.syamcloud.com 2 7200 3600 1209600 300", LastSeen: t0},
+		}},
+	}
+	body := renderPage(t, "domain", data)
+	for _, want := range []string{
+		"<h2>Zone</h2>", `href="/domains/syamcloud.com"`, `href="/rdata/ns1.example.net"`,
+		`href="/rdata/ns1.syamcloud.com%20h.syamcloud.com%202%207200%203600%201209600%20300"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("domain page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `class="badge"`) {
+		t.Error("badge in the zone block")
+	}
+	data["Zone"] = (*zoneView)(nil)
+	if body := renderPage(t, "domain", data); strings.Contains(body, "<h2>Zone</h2>") {
+		t.Error("zone block shown for an apex")
+	}
+}
+
+func TestDomainLink(t *testing.T) {
+	for in, want := range map[string]string{
+		"x.example":          `<a href="/domains/x.example">x.example</a>`,
+		"zone:syamcloud.com": `<a href="/domains/syamcloud.com">zone syamcloud.com</a>`,
+		`a"<b>.example`:      `<a href="/domains/a%22%3Cb%3E.example">a&#34;&lt;b&gt;.example</a>`,
+	} {
+		if got := string(domainLink(in)); got != want {
+			t.Errorf("domainLink(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestRenderZoneTuples(t *testing.T) {
+	body := renderPage(t, "events", map[string]any{
+		"Events": []gjallarhorn.Event{{TS: t0, Domain: "zone:syamcloud.com", Kind: gjallarhorn.KindNSSinkhole, QType: "NS"}},
+		"Kinds": gjallarhorn.Kinds, "Filter": ch.EventFilter{}, "Since": "168h", "Until": "",
+	})
+	if !strings.Contains(body, `<a href="/domains/syamcloud.com">zone syamcloud.com</a>`) || strings.Contains(body, "zone:") {
+		t.Error("events page does not link the zone tuple to its zone")
+	}
+
+	body = renderPage(t, "domain", map[string]any{
+		"FQDN": "syamcloud.com", "Domain": (*pg.Domain)(nil), "Sharing": map[string]uint64{},
+		"Changes": []gjallarhorn.Change{
+			{TS: t0.Add(time.Minute), Key: gjallarhorn.Key{Domain: "zone:syamcloud.com", QType: "NS"}, Added: []string{"ns1.sinkhole.example"}},
+			{TS: t0, Key: gjallarhorn.Key{Domain: "syamcloud.com", QType: "A"}},
+		},
+	})
+	if !strings.Contains(body, `NS · <a href="/domains/syamcloud.com">zone syamcloud.com</a>`) {
+		t.Error("zone change not marked in the timeline")
+	}
+	if strings.Count(body, "zone syamcloud.com") != 1 {
+		t.Error("own change marked as a zone change")
+	}
+}
+
+func TestMergeChanges(t *testing.T) {
+	change := func(domain string, minutes int) gjallarhorn.Change {
+		return gjallarhorn.Change{TS: t0.Add(time.Duration(minutes) * time.Minute), Key: gjallarhorn.Key{Domain: domain}}
+	}
+	got := mergeChanges(
+		[]gjallarhorn.Change{change("x", 5), change("x", 1)},
+		[]gjallarhorn.Change{change("zone:x", 3), change("zone:x", 0)},
+		3,
+	)
+	var order []string
+	for _, c := range got {
+		order = append(order, fmt.Sprintf("%s@%d", c.Domain, int(c.TS.Sub(t0).Minutes())))
+	}
+	if got, want := strings.Join(order, " "), "x@5 zone:x@3 x@1"; got != want {
+		t.Errorf("merged = %s, want %s", got, want)
 	}
 }

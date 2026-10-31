@@ -1,14 +1,18 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebdraven/heimdall/internal/auth"
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
@@ -229,9 +233,83 @@ func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, "rdata sharing", err)
 		return
 	}
+	zone, err := s.loadZone(r.Context(), fqdn, dd.PDNS)
+	if err != nil {
+		s.fail(w, r, http.StatusInternalServerError, "zone", err)
+		return
+	}
+	zoneChanges, err := s.ch.DomainChanges(r.Context(), gjallarhorn.ZonePrefix+fqdn, domainChanges)
+	if err != nil {
+		s.fail(w, r, http.StatusInternalServerError, "zone changes", err)
+		return
+	}
+	dd.Changes = mergeChanges(dd.Changes, zoneChanges, domainChanges)
 	s.render(w, r, "domain", http.StatusOK, map[string]any{
 		"FQDN": fqdn, "Domain": dd.Domain, "Current": dd.Current, "Changes": dd.Changes, "PDNS": dd.PDNS, "Sharing": sharing,
+		"Zone": zone,
 	})
+}
+
+// mergeChanges interleaves two newest-first change lists, keeping the limit
+// most recent.
+func mergeChanges(a, b []gjallarhorn.Change, limit int) []gjallarhorn.Change {
+	out := slices.Concat(a, b)
+	slices.SortStableFunc(out, func(x, y gjallarhorn.Change) int { return y.TS.Compare(x.TS) })
+	return out[:min(len(out), limit)]
+}
+
+// NS or SOA records last seen within zoneCurrent of the latest one of their
+// type are considered current.
+const zoneCurrent = time.Hour
+
+type zoneView struct {
+	Name    string
+	Records []ch.PDNSRecord
+}
+
+// loadZone returns the enclosing zone of fqdn as seen in pdns: the nearest
+// strict ancestor owning NS or SOA records. It returns nil if fqdn owns NS or
+// SOA itself (an apex) or if no ancestor below the TLD does.
+func (s *server) loadZone(ctx context.Context, fqdn string, own []ch.PDNSRecord) (*zoneView, error) {
+	if len(currentZoneRecords(own)) > 0 {
+		return nil, nil
+	}
+	for name := parentName(fqdn); strings.Contains(name, "."); name = parentName(name) {
+		recs, err := s.ch.PDNSByName(ctx, name, domainPDNS)
+		if err != nil {
+			return nil, fmt.Errorf("zone pdns: %w", err)
+		}
+		if zr := currentZoneRecords(recs); len(zr) > 0 {
+			return &zoneView{Name: name, Records: zr}, nil
+		}
+	}
+	return nil, nil
+}
+
+func parentName(name string) string {
+	_, parent, _ := strings.Cut(name, ".")
+	return parent
+}
+
+// currentZoneRecords keeps the current NS and SOA records, sorted by type and
+// value.
+func currentZoneRecords(records []ch.PDNSRecord) []ch.PDNSRecord {
+	newest := map[string]time.Time{}
+	for _, r := range records {
+		if (r.RRType == "NS" || r.RRType == "SOA") && r.LastSeen.After(newest[r.RRType]) {
+			newest[r.RRType] = r.LastSeen
+		}
+	}
+	var out []ch.PDNSRecord
+	for _, r := range records {
+		if last, ok := newest[r.RRType]; ok && !r.LastSeen.Before(last.Add(-zoneCurrent)) {
+			out = append(out, r)
+		}
+	}
+	slices.SortFunc(out, func(a, b ch.PDNSRecord) int {
+		return cmp.Or(cmp.Compare(a.RRType, b.RRType), cmp.Compare(a.RData, b.RData))
+	})
+	return out
 }
 
 // sharingQuery returns the distinct values shown in Current state and the
@@ -314,6 +392,226 @@ func (s *server) rdataPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "rdata", http.StatusOK, buildRdataView(value, records, watched, rdataLimit))
+}
+
+const (
+	searchLimit    = 200
+	searchMinChars = 3
+)
+
+// likePattern turns a search query into an ILIKE pattern: * matches any
+// characters, a query without * matches as a substring, and %, _ and \ are
+// literal. ok is false below searchMinChars characters besides *.
+func likePattern(q string) (pattern string, ok bool) {
+	if utf8.RuneCountInString(strings.ReplaceAll(q, "*", "")) < searchMinChars {
+		return "", false
+	}
+	p := escapeLike(q)
+	if !strings.Contains(q, "*") {
+		return "%" + p + "%", true
+	}
+	return strings.ReplaceAll(p, "*", "%"), true
+}
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func escapeLike(s string) string { return likeEscaper.Replace(s) }
+
+type nameRow struct {
+	ch.NameMatch
+	Domain *pg.Domain
+}
+
+type searchTruncated struct {
+	Domains, Names, Values bool
+}
+
+// searchView is the result of a search. Kind is "ip", "exact" or "pattern",
+// empty when nothing was searched.
+type searchView struct {
+	Query     string
+	Kind      string
+	TooShort  bool
+	Limit     int
+	Domains   []pg.Domain
+	Names     []nameRow
+	Values    []ch.ValueMatch
+	Truncated searchTruncated
+}
+
+// knownName reports whether name is watched or owns pdns records.
+func (s *server) knownName(ctx context.Context, name string) (bool, error) {
+	_, err := s.pg.Domain(ctx, name)
+	switch {
+	case err == nil:
+		return true, nil
+	case !errors.Is(err, pg.ErrNotFound):
+		return false, err
+	}
+	recs, err := s.ch.PDNSByName(ctx, name, 1)
+	return len(recs) > 0, err
+}
+
+// searchPattern queries the watchlist, pdns names and pdns values. A source
+// returning limit rows is flagged as truncated.
+func (s *server) searchPattern(ctx context.Context, v *searchView, pattern string) error {
+	var err error
+	if v.Domains, err = s.pg.SearchDomains(ctx, pattern, v.Limit); err != nil {
+		return err
+	}
+	names, err := s.ch.SearchNames(ctx, pattern, v.Limit)
+	if err != nil {
+		return fmt.Errorf("search names: %w", err)
+	}
+	if v.Values, err = s.ch.SearchValues(ctx, pattern, v.Limit); err != nil {
+		return fmt.Errorf("search values: %w", err)
+	}
+	if v.Names, err = s.attachWatched(ctx, names); err != nil {
+		return err
+	}
+	v.Truncated = searchTruncated{Domains: len(v.Domains) == v.Limit, Names: len(names) == v.Limit, Values: len(v.Values) == v.Limit}
+	return nil
+}
+
+// searchIP lists the names that held addr, the watched ones among them and
+// the value itself, from at most rdataLimit pdns records.
+func (s *server) searchIP(ctx context.Context, v *searchView, addr string) error {
+	records, err := s.ch.PDNSByRdata(ctx, addr, rdataLimit)
+	if err != nil {
+		return fmt.Errorf("pdns by rdata: %w", err)
+	}
+	names, values := groupRecords(records)
+	partial := len(records) == rdataLimit
+	v.Truncated = searchTruncated{Names: partial || len(names) > v.Limit, Values: partial}
+	names = names[:min(len(names), v.Limit)]
+	if v.Names, err = s.attachWatched(ctx, names); err != nil {
+		return err
+	}
+	for _, n := range v.Names {
+		if n.Domain != nil {
+			v.Domains = append(v.Domains, *n.Domain)
+		}
+	}
+	slices.SortFunc(v.Domains, func(a, b pg.Domain) int { return strings.Compare(a.FQDN, b.FQDN) })
+	v.Values = values
+	return nil
+}
+
+// attachWatched looks up, in one query, which names are in the watchlist.
+func (s *server) attachWatched(ctx context.Context, names []ch.NameMatch) ([]nameRow, error) {
+	fqdns := make([]string, 0, len(names))
+	for _, n := range names {
+		fqdns = append(fqdns, n.RRName)
+	}
+	watched, err := s.pg.DomainsByFQDN(ctx, fqdns)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]nameRow, 0, len(names))
+	for _, n := range names {
+		row := nameRow{NameMatch: n}
+		if d, ok := watched[n.RRName]; ok {
+			row.Domain = &d
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// groupRecords aggregates pdns records by owner name and by (rdata, rrtype),
+// most recently seen first.
+func groupRecords(records []ch.PDNSRecord) ([]ch.NameMatch, []ch.ValueMatch) {
+	type vk struct{ rdata, rrtype string }
+	byName := map[string]*ch.NameMatch{}
+	byValue := map[vk]*ch.ValueMatch{}
+	owners := map[vk]map[string]struct{}{}
+	for _, r := range records {
+		n, ok := byName[r.RRName]
+		if !ok {
+			n = &ch.NameMatch{RRName: r.RRName, FirstSeen: r.FirstSeen, LastSeen: r.LastSeen}
+			byName[r.RRName] = n
+		}
+		if !slices.Contains(n.RRTypes, r.RRType) {
+			n.RRTypes = append(n.RRTypes, r.RRType)
+		}
+		n.FirstSeen, n.LastSeen, n.Count = earliest(n.FirstSeen, r.FirstSeen), latest(n.LastSeen, r.LastSeen), n.Count+r.Count
+
+		k := vk{r.RData, r.RRType}
+		v, ok := byValue[k]
+		if !ok {
+			v = &ch.ValueMatch{RData: r.RData, RRType: r.RRType, FirstSeen: r.FirstSeen, LastSeen: r.LastSeen}
+			byValue[k], owners[k] = v, map[string]struct{}{}
+		}
+		owners[k][r.RRName] = struct{}{}
+		v.FirstSeen, v.LastSeen, v.Names = earliest(v.FirstSeen, r.FirstSeen), latest(v.LastSeen, r.LastSeen), uint64(len(owners[k]))
+	}
+	names := make([]ch.NameMatch, 0, len(byName))
+	for _, n := range byName {
+		slices.Sort(n.RRTypes)
+		names = append(names, *n)
+	}
+	slices.SortFunc(names, func(a, b ch.NameMatch) int {
+		return cmp.Or(b.LastSeen.Compare(a.LastSeen), cmp.Compare(a.RRName, b.RRName))
+	})
+	values := make([]ch.ValueMatch, 0, len(byValue))
+	for _, v := range byValue {
+		values = append(values, *v)
+	}
+	slices.SortFunc(values, func(a, b ch.ValueMatch) int {
+		return cmp.Or(b.LastSeen.Compare(a.LastSeen), cmp.Compare(a.RData, b.RData), cmp.Compare(a.RRType, b.RRType))
+	})
+	return names, values
+}
+
+func earliest(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+func (s *server) searchPage(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	v := searchView{Query: q, Limit: searchLimit}
+	if q == "" {
+		s.render(w, r, "search", http.StatusOK, v)
+		return
+	}
+	if a, err := netip.ParseAddr(q); err == nil {
+		http.Redirect(w, r, "/rdata/"+url.PathEscape(a.String()), http.StatusSeeOther)
+		return
+	}
+	name := resolver.Name(q)
+	pattern, ok := likePattern(name)
+	if !ok {
+		v.TooShort = true
+		s.render(w, r, "search", http.StatusOK, v)
+		return
+	}
+	if !strings.Contains(name, "*") {
+		known, err := s.knownName(r.Context(), name)
+		if err != nil {
+			s.storeFail(w, r, err)
+			return
+		}
+		if known {
+			http.Redirect(w, r, "/domains/"+url.PathEscape(name), http.StatusSeeOther)
+			return
+		}
+	}
+	v.Kind = "pattern"
+	if err := s.searchPattern(r.Context(), &v, pattern); err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
+	s.render(w, r, "search", http.StatusOK, v)
 }
 
 func (s *server) toggleDomain(w http.ResponseWriter, r *http.Request) {

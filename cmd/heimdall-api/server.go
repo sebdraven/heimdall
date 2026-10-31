@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sebdraven/heimdall/internal/auth"
+	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
 	"github.com/sebdraven/heimdall/internal/config"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
@@ -25,7 +26,7 @@ import (
 
 const maxBody = 1 << 20
 
-var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "events", "admin"}
+var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin"}
 
 type server struct {
 	cfg   *config.Config
@@ -46,6 +47,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 			}
 			return t.UTC().Format("2006-01-02 15:04:05")
 		},
+		"domainLink": domainLink,
 	}
 	pages := make(map[string]*template.Template, len(pageNames))
 	for _, name := range pageNames {
@@ -94,6 +96,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /domains/{fqdn}/toggle", page(analyst, s.toggleDomain))
 	mux.Handle("DELETE /domains/{fqdn}", page(analyst, s.deleteDomain))
 	mux.Handle("GET /rdata/{value...}", page(viewer, s.rdataPage))
+	mux.Handle("GET /search", page(viewer, s.searchPage))
 	mux.Handle("GET /events", page(viewer, s.eventsPage))
 	mux.Handle("GET /admin", page(admin, s.adminPage))
 	mux.Handle("POST /admin/resolvers", page(admin, s.createResolver))
@@ -114,6 +117,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/campaigns/{id}/domains", api(viewer, s.apiCampaignDomains))
 	mux.Handle("GET /api/events", api(viewer, s.apiEvents))
 	mux.Handle("GET /api/pivots/{fqdn}", api(viewer, s.apiPivots))
+	mux.Handle("GET /api/search", api(viewer, s.apiSearch))
 
 	return s.middleware(mux)
 }
@@ -196,6 +200,17 @@ func (s *server) audit(r *http.Request, action, target string) {
 	if err := s.pg.Audit(r.Context(), uid, action, target); err != nil {
 		s.log.Error("audit", "action", action, "target", target, "err", err)
 	}
+}
+
+// domainLink links a domain to its page. A zone tuple "zone:X" reads
+// "zone X" and links to /domains/X.
+func domainLink(domain string) template.HTML {
+	name, label := domain, domain
+	if z, ok := strings.CutPrefix(domain, gjallarhorn.ZonePrefix); ok {
+		name, label = z, "zone "+z
+	}
+	return template.HTML(`<a href="/domains/` + template.HTMLEscapeString(url.PathEscape(name)) + `">` +
+		template.HTMLEscapeString(label) + `</a>`)
 }
 
 type view struct {

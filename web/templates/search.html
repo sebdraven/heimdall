@@ -1,0 +1,70 @@
+{{define "title"}}{{with .Data.Query}}{{.}} · {{end}}Search · Heimdall{{end}}
+{{define "search_q"}}{{.Data.Query}}{{end}}
+{{define "content"}}
+{{with .Data}}
+<h1>Search{{with .Query}} <code>{{.}}</code>{{end}}</h1>
+{{if not .Query}}
+<p class="meta">A domain, an IP or a value. <code>*</code> matches any characters; without it the query matches anywhere in the name or value.</p>
+{{else if .TooShort}}
+<p class="meta error">Enter at least 3 characters besides <code>*</code>.</p>
+{{else}}
+
+<h2>Watchlist</h2>
+{{if .Truncated.Domains}}<p class="meta">Limited to the first {{.Limit}} domains.</p>{{end}}
+<table>
+  <thead><tr><th>FQDN</th><th>Campaign</th><th>Interval</th><th>Enabled</th></tr></thead>
+  <tbody>
+  {{range .Domains}}
+    <tr>
+      <td>{{domainLink .FQDN}}</td>
+      <td>{{if .CampaignID}}<a href="/campaigns/{{.CampaignID}}">{{.Campaign}}</a>{{else}}—{{end}}</td>
+      <td>{{.IntervalSeconds}}s</td>
+      <td>{{if .Enabled}}yes{{else}}<span class="muted">no</span>{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4" class="empty">No watched domain matches.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Passive DNS names</h2>
+{{if .Truncated.Names}}<p class="meta">Limited to the {{.Limit}} most recently seen names.</p>{{end}}
+<table>
+  <thead><tr><th>Name</th><th>Types</th><th>Watchlist</th><th>First seen (UTC)</th><th>Last seen (UTC)</th><th>Count</th></tr></thead>
+  <tbody>
+  {{range .Names}}
+    <tr>
+      <td>{{domainLink .RRName}}</td>
+      <td>{{range $i, $t := .RRTypes}}{{if $i}}, {{end}}{{$t}}{{end}}</td>
+      <td>{{with .Domain}}{{if .CampaignID}}<a href="/campaigns/{{.CampaignID}}">{{.Campaign}}</a>{{else}}<span class="muted">watched, no campaign</span>{{end}}{{else}}—{{end}}</td>
+      <td class="nowrap">{{ts .FirstSeen}}</td>
+      <td class="nowrap">{{ts .LastSeen}}</td>
+      <td>{{.Count}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="empty">No passive DNS name matches.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Passive DNS values</h2>
+{{if .Truncated.Values}}<p class="meta">Limited to the {{.Limit}} most recently seen values.</p>{{end}}
+<table>
+  <thead><tr><th>Value</th><th>Type</th><th>Names</th><th>First seen (UTC)</th><th>Last seen (UTC)</th></tr></thead>
+  <tbody>
+  {{range .Values}}
+    <tr>
+      <td><a href="/rdata/{{.RData}}"><code>{{.RData}}</code></a></td>
+      <td>{{.RRType}}</td>
+      <td>{{.Names}}</td>
+      <td class="nowrap">{{ts .FirstSeen}}</td>
+      <td class="nowrap">{{ts .LastSeen}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No passive DNS value matches.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
+{{end}}

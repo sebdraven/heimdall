@@ -45,17 +45,13 @@ func (s *Store) Ping(ctx context.Context) error { return s.conn.Ping(ctx) }
 
 func (s *Store) InsertObservations(ctx context.Context, obs []resolver.Observation) error {
 	b, err := s.conn.PrepareBatch(ctx, `INSERT INTO observations
-		(ts, domain, qtype, resolver, rcode, ttl, rdata, answers, answer_hash, latency_ms, truncated, wire)`)
+		(ts, domain, qtype, resolver, rcode, ttl, rdata, answers, answer_hash, latency_ms, truncated, wire, authority)`)
 	if err != nil {
 		return err
 	}
 	for _, o := range obs {
-		answers := make([]map[string]any, 0, len(o.Answers))
-		for _, a := range o.Answers {
-			answers = append(answers, map[string]any{"name": a.Name, "type": a.Type, "value": a.Value})
-		}
-		if err := b.Append(o.TS, o.Domain, o.QType, o.Resolver, o.Rcode, o.TTL, nonNil(o.Rdata), answers,
-			o.AnswerHash, o.LatencyMs, boolUInt8(o.Truncated), string(o.Wire)); err != nil {
+		if err := b.Append(o.TS, o.Domain, o.QType, o.Resolver, o.Rcode, o.TTL, nonNil(o.Rdata), tuples(o.Answers),
+			o.AnswerHash, o.LatencyMs, boolUInt8(o.Truncated), string(o.Wire), tuples(o.Authority)); err != nil {
 			_ = b.Abort()
 			return err
 		}
@@ -112,6 +108,14 @@ func (s *Store) InsertEvents(ctx context.Context, events []gjallarhorn.Event) er
 		}
 	}
 	return b.Send()
+}
+
+func tuples(rrs []resolver.Answer) []map[string]any {
+	out := make([]map[string]any, 0, len(rrs))
+	for _, a := range rrs {
+		out = append(out, map[string]any{"name": a.Name, "type": a.Type, "value": a.Value})
+	}
+	return out
 }
 
 func nonNil(v []string) []string {

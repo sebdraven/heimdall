@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS heimdall.observations
     answer_hash UInt64,
     latency_ms  UInt32,
     truncated   UInt8,
-    wire        String CODEC(ZSTD(3))
+    wire        String CODEC(ZSTD(3)),
+    authority   Array(Tuple(name String, type String, value String)) DEFAULT []
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(ts)
@@ -50,6 +51,23 @@ FROM
     WHERE rcode = 'NOERROR'
 )
 ARRAY JOIN answers AS a;
+
+-- NS and SOA of the authority section, keyed by their owner, the zone apex.
+CREATE MATERIALIZED VIEW IF NOT EXISTS heimdall.pdns_authority_mv TO heimdall.pdns AS
+SELECT
+    tupleElement(a, 'name')  AS rrname,
+    tupleElement(a, 'type')  AS rrtype,
+    tupleElement(a, 'value') AS rdata,
+    ts AS first_seen,
+    ts AS last_seen,
+    toUInt64(1) AS count
+FROM
+(
+    SELECT ts, authority
+    FROM heimdall.observations
+    WHERE rcode = 'NOERROR'
+)
+ARRAY JOIN authority AS a;
 
 CREATE TABLE IF NOT EXISTS heimdall.changes
 (

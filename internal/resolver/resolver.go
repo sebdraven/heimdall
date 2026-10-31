@@ -31,6 +31,8 @@ type Observation struct {
 	TTL        uint32
 	Rdata      []string
 	Answers    []Answer
+	Authority  []Answer
+	Zone       string
 	AnswerHash uint64
 	LatencyMs  uint32
 	Truncated  bool
@@ -90,6 +92,8 @@ func (c *Client) Resolve(ctx context.Context, server, fqdn, qtype string) Observ
 	obs.Rcode = rcodeString(r.Rcode)
 	obs.Rdata, obs.TTL = Extract(r, qt)
 	obs.Answers = Answers(r)
+	obs.Authority = Authority(r)
+	obs.Zone = Zone(obs.Authority)
 	obs.AnswerHash = AnswerHash(obs.Rcode, obs.Rdata)
 	if wire, perr := r.Pack(); perr == nil {
 		obs.Wire = wire
@@ -147,6 +151,37 @@ func Answers(r *dns.Msg) []Answer {
 		h := rr.Header()
 		out = append(out, Answer{Name: Name(h.Name), Type: typeString(h.Rrtype), Value: Normalize(rr)})
 	}
+	return sortAnswers(out)
+}
+
+// Authority returns the NS and SOA RRs of the authority section, sorted and
+// deduplicated.
+func Authority(r *dns.Msg) []Answer {
+	out := []Answer{}
+	for _, rr := range r.Ns {
+		h := rr.Header()
+		if h.Rrtype != dns.TypeNS && h.Rrtype != dns.TypeSOA {
+			continue
+		}
+		out = append(out, Answer{Name: Name(h.Name), Type: typeString(h.Rrtype), Value: Normalize(rr)})
+	}
+	return sortAnswers(out)
+}
+
+// Zone returns the owner of the SOA in authority, else the owner of the NS,
+// else "".
+func Zone(authority []Answer) string {
+	for _, t := range []string{"SOA", "NS"} {
+		for _, a := range authority {
+			if a.Type == t {
+				return a.Name
+			}
+		}
+	}
+	return ""
+}
+
+func sortAnswers(out []Answer) []Answer {
 	slices.SortFunc(out, func(a, b Answer) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Value, b.Value))
 	})

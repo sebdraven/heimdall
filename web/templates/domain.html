@@ -30,6 +30,23 @@
   </tbody>
 </table>
 
+{{with .Data.Zone}}
+<h2>Zone</h2>
+<p class="meta">Enclosing zone {{domainLink .Name}}, current NS and SOA from passive DNS.</p>
+<table>
+  <thead><tr><th>Type</th><th>Rdata</th><th>Last seen (UTC)</th></tr></thead>
+  <tbody>
+  {{range .Records}}
+    <tr>
+      <td>{{.RRType}}</td>
+      <td><a href="/rdata/{{.RData}}"><code>{{.RData}}</code></a></td>
+      <td class="nowrap">{{ts .LastSeen}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
 <h2>Change timeline</h2>
 <table>
   <thead><tr><th>Time (UTC)</th><th>QType</th><th>Resolver</th><th>Rcode</th><th>Added</th><th>Removed</th><th>TTL</th></tr></thead>
@@ -37,7 +54,7 @@
   {{range .Data.Changes}}
     <tr>
       <td class="nowrap">{{ts .TS}}</td>
-      <td>{{.QType}}</td>
+      <td>{{.QType}}{{if ne .Domain $.Data.FQDN}} · {{domainLink .Domain}}{{end}}</td>
       <td>{{.Resolver}}</td>
       <td>{{if ne .PrevRcode .NewRcode}}{{.PrevRcode}} → {{end}}{{.NewRcode}}</td>
       <td class="added">{{range .Added}}<a href="/rdata/{{.}}"><code>{{.}}</code></a><br>{{end}}</td>

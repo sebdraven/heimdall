@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -156,6 +157,63 @@ type pivotJSON struct {
 	Target  periodJSON  `json:"target"`
 	Other   periodJSON  `json:"other"`
 	Overlap *periodJSON `json:"overlap"`
+}
+
+type searchNameJSON struct {
+	RRName    string    `json:"rrname"`
+	RRTypes   []string  `json:"rrtypes"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+	Count     uint64    `json:"count"`
+	Watched   bool      `json:"watched"`
+	Campaign  string    `json:"campaign"`
+}
+
+type searchValueJSON struct {
+	RData     string    `json:"rdata"`
+	RRType    string    `json:"rrtype"`
+	Names     uint64    `json:"names"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
+type searchJSON struct {
+	Query     string            `json:"query"`
+	Kind      string            `json:"kind"`
+	Domains   []domainJSON      `json:"domains"`
+	Names     []searchNameJSON  `json:"names"`
+	Values    []searchValueJSON `json:"values"`
+	Truncated struct {
+		Domains bool `json:"domains"`
+		Names   bool `json:"names"`
+		Values  bool `json:"values"`
+	} `json:"truncated"`
+}
+
+func toSearchJSON(v searchView) searchJSON {
+	out := searchJSON{
+		Query: v.Query, Kind: v.Kind,
+		Domains: toDomainsJSON(v.Domains),
+		Names:   make([]searchNameJSON, 0, len(v.Names)),
+		Values:  make([]searchValueJSON, 0, len(v.Values)),
+	}
+	for _, n := range v.Names {
+		nj := searchNameJSON{
+			RRName: n.RRName, RRTypes: strs(n.RRTypes), FirstSeen: n.FirstSeen.UTC(), LastSeen: n.LastSeen.UTC(), Count: n.Count,
+			Watched: n.Domain != nil,
+		}
+		if n.Domain != nil {
+			nj.Campaign = n.Domain.Campaign
+		}
+		out.Names = append(out.Names, nj)
+	}
+	for _, val := range v.Values {
+		out.Values = append(out.Values, searchValueJSON{
+			RData: val.RData, RRType: val.RRType, Names: val.Names, FirstSeen: val.FirstSeen.UTC(), LastSeen: val.LastSeen.UTC(),
+		})
+	}
+	out.Truncated.Domains, out.Truncated.Names, out.Truncated.Values = v.Truncated.Domains, v.Truncated.Names, v.Truncated.Values
+	return out
 }
 
 func apiError(w http.ResponseWriter, status int, msg string) {
@@ -462,6 +520,46 @@ func (s *server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, eventJSON{TS: e.TS, Domain: e.Domain, Campaign: e.Campaign, Kind: e.Kind, QType: e.QType, Resolver: e.Resolver, Detail: detail})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// apiSearch follows the rules of /search without redirecting: an IP lists
+// the names that held it, a known name is matched exactly.
+func (s *server) apiSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		apiError(w, http.StatusBadRequest, "q is required")
+		return
+	}
+	v := searchView{Query: q, Limit: intParam(r, "limit", searchLimit, searchLimit)}
+	var err error
+	if a, perr := netip.ParseAddr(q); perr == nil {
+		v.Kind = "ip"
+		err = s.searchIP(r.Context(), &v, a.String())
+	} else {
+		name := resolver.Name(q)
+		pattern, ok := likePattern(name)
+		if !ok {
+			apiError(w, http.StatusBadRequest, fmt.Sprintf("q needs at least %d characters besides *", searchMinChars))
+			return
+		}
+		v.Kind = "pattern"
+		if !strings.Contains(name, "*") {
+			known, kerr := s.knownName(r.Context(), name)
+			if kerr != nil {
+				s.apiStoreError(w, r, kerr)
+				return
+			}
+			if known {
+				v.Kind, pattern = "exact", escapeLike(name)
+			}
+		}
+		err = s.searchPattern(r.Context(), &v, pattern)
+	}
+	if err != nil {
+		s.apiStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toSearchJSON(v))
 }
 
 func (s *server) apiPivots(w http.ResponseWriter, r *http.Request) {
