@@ -23,8 +23,38 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
-  image:
+  integration:
     needs: test
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.8
+        env:
+          CLICKHOUSE_USER: heimdall
+          CLICKHOUSE_PASSWORD: heimdall
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 9000:9000
+          - 8123:8123
+        options: >-
+          --health-cmd "clickhouse-client --user heimdall --password heimdall -q 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      HEIMDALL_CH_DSN: clickhouse://heimdall:heimdall@127.0.0.1:9000/default
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # Until go.sum is committed.
+      - run: "[ -f go.sum ] || go mod tidy"
+      - run: go vet -tags integration ./internal/store/ch/...
+      - run: go test -tags integration -count=1 -v ./internal/store/ch/...
+
+  image:
+    needs: [test, integration]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:

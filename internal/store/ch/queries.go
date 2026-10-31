@@ -11,42 +11,26 @@ import (
 // Aliases never reuse a column name: ClickHouse resolves aliases before
 // columns, which turns min(first_seen) AS first_seen into a cycle.
 
-type StateRow struct {
-	gjallarhorn.Key
-	TS      time.Time
-	Hash    uint64
-	Rcode   string
-	Rdata   []string
-	TTL     uint32
-	MaxTTL  uint32
-	Samples uint64
-}
-
-// LoadState returns the latest non-excluded observation per tuple, with the
-// max TTL and sample count over the last day.
-func (s *Store) LoadState(ctx context.Context, window time.Duration, exclude []string) ([]StateRow, error) {
-	args := []any{int64(window.Seconds())}
-	for _, rc := range exclude {
-		args = append(args, rc)
-	}
+// LoadStates returns the latest persisted state of every tuple.
+func (s *Store) LoadStates(ctx context.Context) ([]TupleState, error) {
 	rows, err := s.conn.Query(ctx, `
-		SELECT domain, qtype, resolver,
-		       max(ts), argMax(answer_hash, ts), argMax(rcode, ts), argMax(rdata, ts), argMax(ttl, ts),
-		       maxIf(ttl, ts > now() - INTERVAL 1 DAY), countIf(ts > now() - INTERVAL 1 DAY)
-		FROM observations
-		WHERE ts > now() - toIntervalSecond(?) AND rcode NOT IN (`+placeholders(len(exclude))+`)
-		GROUP BY domain, qtype, resolver`, args...)
+		SELECT domain, qtype, resolver, ts, rcode, tracked, missing, hash, ttl, ceiling, settled, win_start, win_max, win_n
+		FROM tuple_state FINAL`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []StateRow
+	var out []TupleState
 	for rows.Next() {
-		var r StateRow
-		if err := rows.Scan(&r.Domain, &r.QType, &r.Resolver, &r.TS, &r.Hash, &r.Rcode, &r.Rdata, &r.TTL, &r.MaxTTL, &r.Samples); err != nil {
+		var t TupleState
+		var settled uint8
+		st := &t.State
+		if err := rows.Scan(&t.Key.Domain, &t.Key.QType, &t.Key.Resolver, &st.TS, &st.Rcode, &st.Tracked, &st.Missing,
+			&st.Hash, &st.TTL, &st.Ceiling, &settled, &st.WinStart, &st.WinMax, &st.WinN); err != nil {
 			return nil, err
 		}
-		out = append(out, r)
+		st.Settled = settled != 0
+		out = append(out, t)
 	}
 	return out, rows.Err()
 }
@@ -124,7 +108,7 @@ func (s *Store) CurrentState(ctx context.Context, domain string) ([]Current, err
 
 func (s *Store) DomainChanges(ctx context.Context, domain string, limit int) ([]gjallarhorn.Change, error) {
 	rows, err := s.conn.Query(ctx, `
-		SELECT ts, domain, qtype, resolver, prev_hash, new_hash, prev_rcode, new_rcode, added, removed, prev_ttl, new_ttl
+		SELECT ts, domain, qtype, resolver, prev_tracked_hash, new_tracked_hash, prev_rcode, new_rcode, added, removed, prev_ttl, new_ttl
 		FROM changes
 		WHERE domain = ?
 		ORDER BY ts DESC
@@ -136,7 +120,7 @@ func (s *Store) DomainChanges(ctx context.Context, domain string, limit int) ([]
 	var out []gjallarhorn.Change
 	for rows.Next() {
 		var c gjallarhorn.Change
-		if err := rows.Scan(&c.TS, &c.Domain, &c.QType, &c.Resolver, &c.PrevHash, &c.NewHash, &c.PrevRcode, &c.NewRcode,
+		if err := rows.Scan(&c.TS, &c.Domain, &c.QType, &c.Resolver, &c.PrevTrackedHash, &c.NewTrackedHash, &c.PrevRcode, &c.NewRcode,
 			&c.Added, &c.Removed, &c.PrevTTL, &c.NewTTL); err != nil {
 			return nil, err
 		}
@@ -205,8 +189,9 @@ type Pivot struct {
 	Overlap *Period
 }
 
-// Pivots returns the other domains that shared an A, AAAA or NS value with
-// fqdn, with each side's observation period and their overlap, if any.
+// Pivots returns the other owner names that shared an A, AAAA or NS value
+// with fqdn, with each side's observation period and their overlap, if any.
+// pdns is keyed by RR owner, so a CNAME'd name has no A/AAAA of its own.
 func (s *Store) Pivots(ctx context.Context, fqdn string, limit int) ([]Pivot, error) {
 	type rk struct{ rrtype, rdata string }
 	target := map[rk]Period{}
@@ -276,11 +261,4 @@ func earlier(a, b time.Time) time.Time {
 		return a
 	}
 	return b
-}
-
-func placeholders(n int) string {
-	if n == 0 {
-		return "''"
-	}
-	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }

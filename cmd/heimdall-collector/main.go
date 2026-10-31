@@ -21,8 +21,6 @@ import (
 	"github.com/sebdraven/heimdall/internal/store/pg"
 )
 
-const stateWindow = 30 * 24 * time.Hour
-
 func main() {
 	if err := run(); err != nil {
 		slog.Error("heimdall-collector failed", "err", err)
@@ -60,7 +58,7 @@ func run() error {
 	}
 	defer chs.Close()
 
-	tr := newTracker()
+	tr := newTracker(cfg.RemovalGrace)
 	if err := retry(ctx, log, "state", func() error { return tr.load(ctx, chs, log) }); err != nil {
 		return err
 	}
@@ -118,11 +116,30 @@ func run() error {
 		return err
 	}
 
-	writer := chs.NewWriter(cfg.BatchSize, cfg.BatchFlush, log)
+	states := make(chan []ch.TupleState, 1)
+	writer := chs.NewWriter(cfg.BatchSize, cfg.BatchFlush, log, tr.requeue)
 	writerDone := make(chan struct{})
 	go func() {
-		writer.Run(items)
+		writer.Run(items, states)
 		close(writerDone)
+	}()
+
+	// Sole sender on states; the final snapshot is taken once the workers
+	// have stopped, before the writer's last flush.
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(states)
+		t := time.NewTicker(cfg.StateSnapshot)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				states <- tr.snapshot()
+			case <-workersDone:
+				states <- tr.snapshot()
+				return
+			}
+		}
 	}()
 
 	go func() {
@@ -152,8 +169,9 @@ func run() error {
 					continue
 				}
 				obs := client.Resolve(context.WithoutCancel(ctx), job.Resolver, job.Domain, job.QType)
-				changes, events := tr.observe(obs, job.Campaign, *classes.Load())
+				changes, events, release := tr.observe(obs, job.Campaign, *classes.Load())
 				items <- ch.Item{Obs: obs, Changes: changes, Events: events}
+				release()
 			}
 		})
 	}
@@ -162,6 +180,7 @@ func run() error {
 	sched.Run(ctx)
 	close(jobs)
 	wg.Wait()
+	close(workersDone)
 	close(items)
 	<-writerDone
 	log.Info("stopped")

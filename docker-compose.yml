@@ -35,7 +35,7 @@ services:
         hard: 262144
     healthcheck:
       # Passes only once init.sql has created the last table.
-      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'SELECT 1 FROM heimdall.events LIMIT 1'"]
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'SELECT 1 FROM heimdall.tuple_state LIMIT 1'"]
       interval: 10s
       timeout: 5s
       retries: 30

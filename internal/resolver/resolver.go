@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -29,10 +30,18 @@ type Observation struct {
 	Rcode      string
 	TTL        uint32
 	Rdata      []string
+	Answers    []Answer
 	AnswerHash uint64
 	LatencyMs  uint32
 	Truncated  bool
 	Wire       []byte
+}
+
+// Answer is one RR of the answer section, keyed by its owner name.
+type Answer struct {
+	Name  string
+	Type  string
+	Value string
 }
 
 type Client struct {
@@ -80,6 +89,7 @@ func (c *Client) Resolve(ctx context.Context, server, fqdn, qtype string) Observ
 	}
 	obs.Rcode = rcodeString(r.Rcode)
 	obs.Rdata, obs.TTL = Extract(r, qt)
+	obs.Answers = Answers(r)
 	obs.AnswerHash = AnswerHash(obs.Rcode, obs.Rdata)
 	if wire, perr := r.Pack(); perr == nil {
 		obs.Wire = wire
@@ -127,6 +137,27 @@ func Extract(r *dns.Msg, qtype uint16) ([]string, uint32) {
 	}
 	slices.Sort(out)
 	return slices.Compact(out), ttl
+}
+
+// Answers returns every RR of the answer section, CNAME chain included,
+// sorted and deduplicated.
+func Answers(r *dns.Msg) []Answer {
+	out := make([]Answer, 0, len(r.Answer))
+	for _, rr := range r.Answer {
+		h := rr.Header()
+		out = append(out, Answer{Name: Name(h.Name), Type: typeString(h.Rrtype), Value: Normalize(rr)})
+	}
+	slices.SortFunc(out, func(a, b Answer) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Value, b.Value))
+	})
+	return slices.Compact(out)
+}
+
+func typeString(t uint16) string {
+	if s, ok := dns.TypeToString[t]; ok {
+		return s
+	}
+	return fmt.Sprintf("TYPE%d", t)
 }
 
 func Normalize(rr dns.RR) string {

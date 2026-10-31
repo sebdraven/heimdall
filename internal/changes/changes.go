@@ -1,8 +1,11 @@
 package gjallarhorn
 
 import (
+	"maps"
 	"slices"
 	"time"
+
+	"github.com/sebdraven/heimdall/internal/resolver"
 )
 
 const (
@@ -29,6 +32,10 @@ func Transient(rcode string) bool {
 	return slices.Contains(TransientRcodes, rcode)
 }
 
+// Resolvers often serve a rotating subset of a larger pool for these types,
+// so a value is only removed after RemovalGrace consecutive absences.
+var multiValued = map[string]bool{"A": true, "AAAA": true, "NS": true, "MX": true, "TXT": true}
+
 type Key struct {
 	Domain   string
 	QType    string
@@ -38,67 +45,75 @@ type Key struct {
 type Observation struct {
 	Key
 	TS    time.Time
-	Hash  uint64
 	Rcode string
 	Rdata []string
 	TTL   uint32
 }
 
+// State is the detection state of one tuple. Tracked is the sorted set of
+// values considered present, Missing[i] the consecutive absences of
+// Tracked[i], and Hash covers (Rcode, Tracked).
 type State struct {
-	TS    time.Time
-	Hash  uint64
-	Rcode string
-	Rdata []string
-	TTL   uint32
+	TS      time.Time
+	Rcode   string
+	Tracked []string
+	Missing []uint32
+	Hash    uint64
+	TTL     uint32
 
 	Ceiling  uint32
 	Settled  bool
 	WinStart time.Time
 	WinMax   uint32
-	WinN     int
+	WinN     uint32
 }
 
 type Change struct {
 	TS time.Time
 	Key
-	PrevHash  uint64
-	NewHash   uint64
-	PrevRcode string
-	NewRcode  string
-	Added     []string
-	Removed   []string
-	PrevTTL   uint32
-	NewTTL    uint32
+	// Hashes of (rcode, tracked set) before and after, not of the raw
+	// answer: they never match observations.answer_hash.
+	PrevTrackedHash uint64
+	NewTrackedHash  uint64
+	PrevRcode       string
+	NewRcode        string
+	Added           []string
+	Removed         []string
+	PrevTTL         uint32
+	NewTTL          uint32
 }
 
 // Step applies obs to the previous state of its tuple (nil for the first
-// observation) and returns the new state and the change, if any. Transient
-// rcodes must be filtered by the caller.
-func Step(prev *State, obs Observation) (State, *Change) {
+// observation) and returns the new state and the change of the tracked set,
+// if any. Transient rcodes must be filtered by the caller.
+func Step(prev *State, obs Observation, grace int) (State, *Change) {
 	if prev == nil {
-		return initial(obs), nil
+		return initial(obs, observedSet(obs), nil), nil
 	}
 	if obs.TS.Before(prev.TS) {
 		return *prev, nil
 	}
-	if obs.Hash != prev.Hash {
-		added, removed := SetDiff(prev.Rdata, obs.Rdata)
-		return initial(obs), &Change{
-			TS:        obs.TS,
-			Key:       obs.Key,
-			PrevHash:  prev.Hash,
-			NewHash:   obs.Hash,
-			PrevRcode: prev.Rcode,
-			NewRcode:  obs.Rcode,
-			Added:     added,
-			Removed:   removed,
-			PrevTTL:   prev.TTL,
-			NewTTL:    obs.TTL,
+
+	tracked, missing := nextSet(*prev, obs, grace)
+	if hash := resolver.AnswerHash(obs.Rcode, tracked); hash != prev.Hash {
+		added, removed := SetDiff(prev.Tracked, tracked)
+		next := initial(obs, tracked, missing)
+		return next, &Change{
+			TS:              obs.TS,
+			Key:             obs.Key,
+			PrevTrackedHash: prev.Hash,
+			NewTrackedHash:  next.Hash,
+			PrevRcode:       prev.Rcode,
+			NewRcode:        obs.Rcode,
+			Added:           added,
+			Removed:         removed,
+			PrevTTL:         prev.TTL,
+			NewTTL:          obs.TTL,
 		}
 	}
 
 	next := *prev
-	next.TS, next.TTL = obs.TS, obs.TTL
+	next.TS, next.TTL, next.Missing = obs.TS, obs.TTL, missing
 	if obs.Rcode != rcodeNoError || len(obs.Rdata) == 0 {
 		return next, nil
 	}
@@ -108,31 +123,88 @@ func Step(prev *State, obs Observation) (State, *Change) {
 		return next, nil
 	}
 	return next, &Change{
-		TS:        obs.TS,
-		Key:       obs.Key,
-		PrevHash:  prev.Hash,
-		NewHash:   obs.Hash,
-		PrevRcode: prev.Rcode,
-		NewRcode:  obs.Rcode,
-		Added:     []string{},
-		Removed:   []string{},
-		PrevTTL:   from,
-		NewTTL:    next.Ceiling,
+		TS:              obs.TS,
+		Key:             obs.Key,
+		PrevTrackedHash: prev.Hash,
+		NewTrackedHash:  prev.Hash,
+		PrevRcode:       prev.Rcode,
+		NewRcode:        obs.Rcode,
+		Added:           []string{},
+		Removed:         []string{},
+		PrevTTL:         from,
+		NewTTL:          next.Ceiling,
 	}
 }
 
-func initial(obs Observation) State {
+func initial(obs Observation, tracked []string, missing []uint32) State {
+	if missing == nil {
+		missing = make([]uint32, len(tracked))
+	}
 	return State{
 		TS:       obs.TS,
-		Hash:     obs.Hash,
 		Rcode:    obs.Rcode,
-		Rdata:    obs.Rdata,
+		Tracked:  tracked,
+		Missing:  missing,
+		Hash:     resolver.AnswerHash(obs.Rcode, tracked),
 		TTL:      obs.TTL,
 		Ceiling:  obs.TTL,
 		WinStart: obs.TS,
 		WinMax:   obs.TTL,
 		WinN:     1,
 	}
+}
+
+func observedSet(obs Observation) []string {
+	if obs.Rcode != rcodeNoError {
+		return []string{}
+	}
+	out := slices.Clone(obs.Rdata)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// nextSet applies hysteresis only between two NOERROR answers of a
+// multi-valued type; rcode transitions and single-valued types replace the
+// set at once.
+func nextSet(prev State, obs Observation, grace int) ([]string, []uint32) {
+	cur := observedSet(obs)
+	if obs.Rcode != rcodeNoError || prev.Rcode != rcodeNoError || !multiValued[obs.QType] {
+		return cur, make([]uint32, len(cur))
+	}
+	return Track(prev.Tracked, prev.Missing, cur, grace)
+}
+
+// Track adds new values at once and drops a tracked value once it has been
+// missing from grace consecutive observations.
+func Track(tracked []string, missing []uint32, observed []string, grace int) ([]string, []uint32) {
+	grace = max(grace, 1)
+	seen := make(map[string]struct{}, len(observed))
+	for _, v := range observed {
+		seen[v] = struct{}{}
+	}
+	miss := make(map[string]uint32, len(tracked)+len(observed))
+	for i, v := range tracked {
+		if _, ok := seen[v]; ok {
+			miss[v] = 0
+			continue
+		}
+		var m uint32
+		if i < len(missing) {
+			m = missing[i]
+		}
+		if m++; int(m) < grace {
+			miss[v] = m
+		}
+	}
+	for _, v := range observed {
+		miss[v] = 0
+	}
+	out := slices.Sorted(maps.Keys(miss))
+	counts := make([]uint32, len(out))
+	for i, v := range out {
+		counts[i] = miss[v]
+	}
+	return out, counts
 }
 
 func (s State) observeTTL(ts time.Time, ttl uint32) (State, bool) {

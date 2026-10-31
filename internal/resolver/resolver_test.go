@@ -35,7 +35,7 @@ func TestNormalize(t *testing.T) {
 func TestExtract(t *testing.T) {
 	m := new(dns.Msg)
 	for _, s := range []string{
-		"www.example.com. 300 IN CNAME edge.example.net.",
+		"WWW.Example.com. 300 IN CNAME Edge.Example.NET.",
 		"edge.example.net. 120 IN A 192.0.2.2",
 		"edge.example.net. 60 IN A 192.0.2.1",
 		"edge.example.net. 60 IN A 192.0.2.1",
@@ -55,6 +55,18 @@ func TestExtract(t *testing.T) {
 	}
 	if rdata, ttl := Extract(new(dns.Msg), dns.TypeA); len(rdata) != 0 || ttl != 0 {
 		t.Errorf("empty answer: rdata = %v, ttl = %d", rdata, ttl)
+	}
+
+	wantAnswers := []Answer{
+		{Name: "edge.example.net", Type: "A", Value: "192.0.2.1"},
+		{Name: "edge.example.net", Type: "A", Value: "192.0.2.2"},
+		{Name: "www.example.com", Type: "CNAME", Value: "edge.example.net"},
+	}
+	if got := Answers(m); !slices.Equal(got, wantAnswers) {
+		t.Errorf("answers = %+v, want %+v", got, wantAnswers)
+	}
+	if got := Answers(new(dns.Msg)); len(got) != 0 {
+		t.Errorf("empty answer: answers = %+v", got)
 	}
 }
 

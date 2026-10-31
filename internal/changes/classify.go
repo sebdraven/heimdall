@@ -62,7 +62,7 @@ func Classify(ch Change, campaign string, classes []NSClass) []Event {
 		})
 	}
 
-	if ch.PrevHash == ch.NewHash {
+	if ch.PrevTrackedHash == ch.NewTrackedHash {
 		if ch.PrevTTL != ch.NewTTL {
 			emit(KindTTLChange, map[string]any{"prev_ttl": ch.PrevTTL, "new_ttl": ch.NewTTL})
 		}

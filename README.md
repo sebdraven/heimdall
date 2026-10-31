@@ -22,6 +22,28 @@ observations, passive DNS, changes and events.
 Event kinds: `new_rdata`, `removed_rdata`, `nxdomain`, `resurrection`,
 `ns_sinkhole`, `ns_parking`, `soa_serial_change`, `ttl_change`.
 
+For A, AAAA, NS, MX and TXT a new value is reported at once, but a value is
+only reported removed after `HEIMDALL_REMOVAL_GRACE` (default 3) consecutive
+answers without it, so that resolvers rotating through a pool do not produce
+churn. NXDOMAIN and NOERROR transitions are immediate.
+
+`observations.answer_hash` covers the answer as observed, while
+`changes.prev_tracked_hash` / `changes.new_tracked_hash` and `tuple_state.hash`
+cover the tracked set after hysteresis: the two families never match and must
+not be joined.
+
+## Passive DNS semantics
+
+As in the Passive DNS Common Output Format, `rrname` is the **owner** of the
+record, not the watched name that was queried. Every RR of the answer section
+is recorded, CNAME chain included: an A query for `www.x` answered with a CNAME
+to `cdn.y` yields two records, `(www.x, CNAME, cdn.y)` and `(cdn.y, A, <ip>)`.
+
+Going from a watched name to its IPs therefore follows the CNAME chain: query
+`/api/pdns/query/www.x`, then the CNAME targets. Likewise `/api/pivots/{fqdn}`
+only sees the A/AAAA/NS owned by `fqdn` itself, and may return CNAME targets
+that are not in the watchlist.
+
 ## Quick start
 
 ```sh
