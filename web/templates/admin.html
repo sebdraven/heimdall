@@ -1,0 +1,81 @@
+{{define "title"}}Admin · Heimdall{{end}}
+{{define "content"}}
+<h1>Admin</h1>
+
+<h2>Resolvers</h2>
+<table>
+  <thead><tr><th>Address</th><th>Label</th><th>QPS</th><th>Enabled</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Resolvers}}
+    <tr>
+      <td><code>{{.Address}}</code></td>
+      <td>{{.Label}}</td>
+      <td>{{.QPS}}</td>
+      <td>{{if .Enabled}}yes{{else}}<span class="muted">no</span>{{end}}</td>
+      <td class="actions">
+        <form method="post" action="/admin/resolvers/{{.ID}}/toggle">
+          {{template "csrf" $}}
+          <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+        </form>
+        <button class="danger" hx-delete="/admin/resolvers/{{.ID}}" hx-confirm="Delete resolver {{.Address}}?" hx-target="closest tr" hx-swap="outerHTML">Delete</button>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No resolvers: nothing is being measured.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<form class="inline" method="post" action="/admin/resolvers">
+  {{template "csrf" .}}
+  <input name="address" placeholder="host:port" required>
+  <input name="label" placeholder="Label">
+  <input name="qps" type="number" min="1" value="20">
+  <button type="submit">Add resolver</button>
+</form>
+
+<h2>NS classes</h2>
+<table>
+  <thead><tr><th>Pattern (NS suffix)</th><th>Kind</th><th>Label</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.NSClasses}}
+    <tr>
+      <td><code>{{.Pattern}}</code></td>
+      <td>{{.Kind}}</td>
+      <td>{{.Label}}</td>
+      <td class="actions">
+        <button class="danger" hx-delete="/admin/nsclasses/{{.ID}}" hx-confirm="Delete {{.Pattern}}?" hx-target="closest tr" hx-swap="outerHTML">Delete</button>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4" class="empty">No NS classes.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<form class="inline" method="post" action="/admin/nsclasses">
+  {{template "csrf" .}}
+  <input name="pattern" placeholder="sinkhole.example.net" required>
+  <select name="kind">
+    <option value="sinkhole">sinkhole</option>
+    <option value="parking">parking</option>
+  </select>
+  <input name="label" placeholder="Label">
+  <button type="submit">Add NS class</button>
+</form>
+
+<h2>Audit log</h2>
+<table>
+  <thead><tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Target</th></tr></thead>
+  <tbody>
+  {{range .Data.Audit}}
+    <tr>
+      <td class="nowrap">{{ts .At}}</td>
+      <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">cli</span>{{end}}</td>
+      <td>{{.Action}}</td>
+      <td><code>{{.Target}}</code></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4" class="empty">Empty.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

@@ -1,0 +1,6 @@
+{{define "title"}}Error · Heimdall{{end}}
+{{define "content"}}
+<h1>{{.Data.Status}}</h1>
+<p class="error">{{.Data.Message}}</p>
+<p><a href="{{.Data.Back}}">Back</a></p>
+{{end}}

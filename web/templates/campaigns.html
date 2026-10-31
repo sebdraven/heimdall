@@ -1,0 +1,30 @@
+{{define "title"}}Campaigns · Heimdall{{end}}
+{{define "content"}}
+<h1>Campaigns</h1>
+<table>
+  <thead><tr><th>Name</th><th>Family</th><th>Domains</th><th>Created</th></tr></thead>
+  <tbody>
+  {{range .Data.Campaigns}}
+    <tr>
+      <td><a href="/campaigns/{{.ID}}">{{.Name}}</a></td>
+      <td>{{.Family}}</td>
+      <td>{{.Domains}}</td>
+      <td class="nowrap">{{ts .CreatedAt}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4" class="empty">No campaigns.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+{{if .Can "analyst"}}
+<h2>New campaign</h2>
+<form class="inline" method="post" action="/campaigns">
+  {{template "csrf" .}}
+  <input name="name" placeholder="Name" required>
+  <input name="family" placeholder="Family (e.g. SpyNote)">
+  <input name="description" placeholder="Description" class="wide">
+  <button type="submit">Create</button>
+</form>
+{{end}}
+{{end}}

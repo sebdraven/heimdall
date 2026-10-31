@@ -1,0 +1,24 @@
+{{define "csrf"}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
+
+{{define "events_table"}}
+<table>
+  <thead>
+    <tr><th>Time (UTC)</th><th>Kind</th><th>Domain</th><th>Campaign</th><th>QType</th><th>Resolver</th><th>Detail</th></tr>
+  </thead>
+  <tbody>
+  {{range .}}
+    <tr>
+      <td class="nowrap">{{ts .TS}}</td>
+      <td><span class="kind kind-{{.Kind}}">{{.Kind}}</span></td>
+      <td><a href="/domains/{{.Domain}}">{{.Domain}}</a></td>
+      <td>{{.Campaign}}</td>
+      <td>{{.QType}}</td>
+      <td>{{.Resolver}}</td>
+      <td><code>{{.Detail}}</code></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7" class="empty">No events.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
