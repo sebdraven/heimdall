@@ -205,9 +205,97 @@ func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, "pdns", err)
 		return
 	}
+	values, exclude := sharingQuery(fqdn, current)
+	sharing, err := s.ch.RdataSharing(r.Context(), values, exclude)
+	if err != nil {
+		s.fail(w, r, http.StatusInternalServerError, "rdata sharing", err)
+		return
+	}
 	s.render(w, r, "domain", http.StatusOK, map[string]any{
-		"FQDN": fqdn, "Domain": domain, "Current": current, "Changes": changes, "PDNS": records,
+		"FQDN": fqdn, "Domain": domain, "Current": current, "Changes": changes, "PDNS": records, "Sharing": sharing,
 	})
+}
+
+// sharingQuery returns the distinct values shown in Current state and the
+// owner names not to count: the domain itself and its CNAME targets, which
+// own the values reached through the chain.
+func sharingQuery(fqdn string, current []ch.Current) (values, exclude []string) {
+	exclude = []string{fqdn}
+	for _, c := range current {
+		values = append(values, c.Rdata...)
+		if c.QType == "CNAME" {
+			for _, v := range c.Rdata {
+				exclude = append(exclude, resolver.Name(v))
+			}
+		}
+	}
+	slices.Sort(values)
+	slices.Sort(exclude)
+	return slices.Compact(values), slices.Compact(exclude)
+}
+
+type rdataRow struct {
+	ch.PDNSRecord
+	Domain *pg.Domain
+}
+
+const rdataLimit = 1000
+
+type rdataView struct {
+	Value     string
+	Rows      []rdataRow
+	Names     int
+	Outside   int
+	Limit     int
+	Truncated bool
+}
+
+// buildRdataView sorts records by last seen, newest first, and attaches the
+// watched domain of each owner name, if any. A result of exactly limit rows
+// is flagged as truncated.
+func buildRdataView(value string, records []ch.PDNSRecord, watched map[string]pg.Domain, limit int) rdataView {
+	v := rdataView{Value: value, Rows: make([]rdataRow, 0, len(records)), Limit: limit, Truncated: len(records) == limit}
+	names := map[string]struct{}{}
+	for _, rec := range records {
+		row := rdataRow{PDNSRecord: rec}
+		if d, ok := watched[rec.RRName]; ok {
+			row.Domain = &d
+		}
+		v.Rows = append(v.Rows, row)
+		if _, seen := names[rec.RRName]; !seen {
+			names[rec.RRName] = struct{}{}
+			if row.Domain == nil {
+				v.Outside++
+			}
+		}
+	}
+	v.Names = len(names)
+	slices.SortStableFunc(v.Rows, func(a, b rdataRow) int { return b.LastSeen.Compare(a.LastSeen) })
+	return v
+}
+
+func (s *server) rdataPage(w http.ResponseWriter, r *http.Request) {
+	value := normalizeRdataQuery(r.PathValue("value"))
+	if value == "" {
+		s.fail(w, r, http.StatusNotFound, "Not found.", nil)
+		return
+	}
+	records, err := s.ch.PDNSByRdata(r.Context(), value, rdataLimit)
+	if err != nil {
+		s.fail(w, r, http.StatusInternalServerError, "pdns by rdata", err)
+		return
+	}
+	names := make([]string, 0, len(records))
+	for _, rec := range records {
+		names = append(names, rec.RRName)
+	}
+	slices.Sort(names)
+	watched, err := s.pg.DomainsByFQDN(r.Context(), slices.Compact(names))
+	if err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
+	s.render(w, r, "rdata", http.StatusOK, buildRdataView(value, records, watched, rdataLimit))
 }
 
 func (s *server) toggleDomain(w http.ResponseWriter, r *http.Request) {

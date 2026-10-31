@@ -1,0 +1,23 @@
+{{define "title"}}{{.Data.Value}} · Heimdall{{end}}
+{{define "content"}}
+<h1><code>{{.Data.Value}}</code></h1>
+<p class="meta">{{.Data.Names}} distinct names · {{.Data.Outside}} outside the watchlist{{if .Data.Truncated}} · limited to the {{.Data.Limit}} most recent records, counts are partial{{end}}</p>
+
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Campaign</th><th>First seen (UTC)</th><th>Last seen (UTC)</th><th>Count</th></tr></thead>
+  <tbody>
+  {{range .Data.Rows}}
+    <tr>
+      <td><a href="/domains/{{.RRName}}">{{.RRName}}</a></td>
+      <td>{{.RRType}}</td>
+      <td>{{with .Domain}}{{if .CampaignID}}<a href="/campaigns/{{.CampaignID}}">{{.Campaign}}</a>{{else}}<span class="muted">watched, no campaign</span>{{end}}{{else}}—{{end}}</td>
+      <td class="nowrap">{{ts .FirstSeen}}</td>
+      <td class="nowrap">{{ts .LastSeen}}</td>
+      <td>{{.Count}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="empty">No passive DNS records for this value.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

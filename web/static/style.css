@@ -92,6 +92,7 @@ form.inline .wide { min-width: 20rem; }
 .error { color: var(--danger); }
 .nowrap { white-space: nowrap; }
 .tag { border: 1px solid var(--line); border-radius: 3px; padding: 0 .35rem; }
+.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 0 .4rem; white-space: nowrap; }
 
 .kind { font-weight: 600; }
 .kind-nxdomain, .kind-removed_rdata, .kind-ns_sinkhole { color: var(--danger); }

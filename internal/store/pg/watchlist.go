@@ -104,6 +104,23 @@ func (s *Store) Domain(ctx context.Context, fqdn string) (Domain, error) {
 	return scanDomain(s.pool.QueryRow(ctx, domainSelect+` WHERE d.fqdn = $1`, fqdn))
 }
 
+// DomainsByFQDN returns the watched domains among fqdns, keyed by fqdn.
+func (s *Store) DomainsByFQDN(ctx context.Context, fqdns []string) (map[string]Domain, error) {
+	out := make(map[string]Domain, len(fqdns))
+	if len(fqdns) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, domainSelect+` WHERE d.fqdn = ANY($1::text[])`, fqdns)
+	domains, err := collect(rows, err, scanDomain)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range domains {
+		out[d.FQDN] = d
+	}
+	return out, nil
+}
+
 func (s *Store) CreateDomain(ctx context.Context, d NewDomain) (Domain, error) {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO domains (fqdn, campaign_id, interval_seconds, enabled, source, added_by)
