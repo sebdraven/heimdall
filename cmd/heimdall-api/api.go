@@ -34,8 +34,91 @@ type domainJSON struct {
 func toDomainJSON(d pg.Domain) domainJSON {
 	return domainJSON{
 		FQDN: d.FQDN, Campaign: d.Campaign, IntervalSeconds: d.IntervalSeconds,
-		Enabled: d.Enabled, Source: d.Source, AddedAt: d.AddedAt,
+		Enabled: d.Enabled, Source: d.Source, AddedAt: d.AddedAt.UTC(),
 	}
+}
+
+func toDomainsJSON(ds []pg.Domain) []domainJSON {
+	out := make([]domainJSON, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, toDomainJSON(d))
+	}
+	return out
+}
+
+type currentJSON struct {
+	QType    string    `json:"qtype"`
+	Resolver string    `json:"resolver"`
+	TS       time.Time `json:"ts"`
+	Rcode    string    `json:"rcode"`
+	TTL      uint32    `json:"ttl"`
+	Rdata    []string  `json:"rdata"`
+}
+
+type changeJSON struct {
+	TS        time.Time `json:"ts"`
+	QType     string    `json:"qtype"`
+	Resolver  string    `json:"resolver"`
+	PrevRcode string    `json:"prev_rcode"`
+	NewRcode  string    `json:"new_rcode"`
+	Added     []string  `json:"added"`
+	Removed   []string  `json:"removed"`
+	PrevTTL   uint32    `json:"prev_ttl"`
+	NewTTL    uint32    `json:"new_ttl"`
+}
+
+type pdnsJSON struct {
+	RRName    string    `json:"rrname"`
+	RRType    string    `json:"rrtype"`
+	RData     string    `json:"rdata"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+	Count     uint64    `json:"count"`
+}
+
+type domainDetailJSON struct {
+	Domain  *domainJSON   `json:"domain"`
+	Current []currentJSON `json:"current"`
+	Changes []changeJSON  `json:"changes"`
+	PDNS    []pdnsJSON    `json:"pdns"`
+}
+
+// strs encodes a nil slice as [] rather than null.
+func strs(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+func toDomainDetailJSON(dd domainDetail) domainDetailJSON {
+	out := domainDetailJSON{
+		Current: make([]currentJSON, 0, len(dd.Current)),
+		Changes: make([]changeJSON, 0, len(dd.Changes)),
+		PDNS:    make([]pdnsJSON, 0, len(dd.PDNS)),
+	}
+	if dd.Domain != nil {
+		d := toDomainJSON(*dd.Domain)
+		out.Domain = &d
+	}
+	for _, c := range dd.Current {
+		out.Current = append(out.Current, currentJSON{
+			QType: c.QType, Resolver: c.Resolver, TS: c.TS.UTC(), Rcode: c.Rcode, TTL: c.TTL, Rdata: strs(c.Rdata),
+		})
+	}
+	for _, c := range dd.Changes {
+		out.Changes = append(out.Changes, changeJSON{
+			TS: c.TS.UTC(), QType: c.QType, Resolver: c.Resolver, PrevRcode: c.PrevRcode, NewRcode: c.NewRcode,
+			Added: strs(c.Added), Removed: strs(c.Removed), PrevTTL: c.PrevTTL, NewTTL: c.NewTTL,
+		})
+	}
+	for _, p := range dd.PDNS {
+		out.PDNS = append(out.PDNS, pdnsJSON{
+			RRName: p.RRName, RRType: p.RRType, RData: p.RData,
+			FirstSeen: p.FirstSeen.UTC(), LastSeen: p.LastSeen.UTC(), Count: p.Count,
+		})
+	}
+	return out
 }
 
 type campaignJSON struct {
@@ -161,11 +244,35 @@ func (s *server) apiDomains(w http.ResponseWriter, r *http.Request) {
 		s.apiStoreError(w, r, err)
 		return
 	}
-	out := make([]domainJSON, 0, len(domains))
-	for _, d := range domains {
-		out = append(out, toDomainJSON(d))
+	writeJSON(w, http.StatusOK, toDomainsJSON(domains))
+}
+
+func (s *server) apiDomainDetail(w http.ResponseWriter, r *http.Request) {
+	fqdn := resolver.Name(r.PathValue("fqdn"))
+	dd, err := s.loadDomain(r.Context(), fqdn, intParam(r, "limit", domainChanges, domainChangesMax))
+	if err != nil {
+		s.apiStoreError(w, r, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, toDomainDetailJSON(dd))
+}
+
+func (s *server) apiCampaignDomains(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if _, err := s.pg.Campaign(r.Context(), id); err != nil {
+		s.apiStoreError(w, r, err)
+		return
+	}
+	domains, err := s.pg.Domains(r.Context(), &id)
+	if err != nil {
+		s.apiStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toDomainsJSON(domains))
 }
 
 func (s *server) campaignID(r *http.Request, name string) (*int64, error) {

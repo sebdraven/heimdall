@@ -71,16 +71,25 @@ GET    /api/pdns/query/{rrname}     NDJSON, CIRCL Passive DNS COF
 GET    /api/pdns/rdata/{value}      NDJSON, CIRCL Passive DNS COF
 GET    /api/domains[?campaign=]
 POST   /api/domains                 {"fqdn", "campaign", "interval_seconds", "enabled", "source"}
+GET    /api/domains/{fqdn}/detail[?limit=]   what /domains/{fqdn} shows, see below
 PATCH  /api/domains/{fqdn}
 DELETE /api/domains/{fqdn}
 GET    /api/campaigns
 POST   /api/campaigns               {"name", "family", "description"}
+GET    /api/campaigns/{id}/domains  same fields as GET /api/domains, 404 if unknown
 GET    /api/events?since=&until=&kind=&campaign=&domain=&limit=
 GET    /api/pivots/{fqdn}           domains sharing an A/AAAA/NS value, with overlap
 GET    /healthz                     no auth
 ```
 
 `since` and `until` accept a duration (`24h`), a date, RFC 3339 or epoch seconds.
+
+`/api/domains/{fqdn}/detail` returns
+`{"domain", "current", "changes", "pdns"}`: the watchlist entry (`null` if the
+name is not watched, which is not a 404), the latest answer per qtype and
+resolver over the last 7 days, the most recent changes (`limit`, default 200,
+max 1000) and up to 1000 passive DNS records owned by the name. Dates are
+RFC 3339 UTC.
 
 Roles: `viewer` reads; `analyst` also manages domains and campaigns; `admin`
 also manages resolvers and NS classes and reads the audit log.

@@ -106,10 +106,12 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/pdns/rdata/{value...}", api(viewer, s.apiPDNSRdata))
 	mux.Handle("GET /api/domains", api(viewer, s.apiDomains))
 	mux.Handle("POST /api/domains", api(analyst, s.apiCreateDomain))
+	mux.Handle("GET /api/domains/{fqdn}/detail", api(viewer, s.apiDomainDetail))
 	mux.Handle("PATCH /api/domains/{fqdn}", api(analyst, s.apiPatchDomain))
 	mux.Handle("DELETE /api/domains/{fqdn}", api(analyst, s.apiDeleteDomain))
 	mux.Handle("GET /api/campaigns", api(viewer, s.apiCampaigns))
 	mux.Handle("POST /api/campaigns", api(analyst, s.apiCreateCampaign))
+	mux.Handle("GET /api/campaigns/{id}/domains", api(viewer, s.apiCampaignDomains))
 	mux.Handle("GET /api/events", api(viewer, s.apiEvents))
 	mux.Handle("GET /api/pivots/{fqdn}", api(viewer, s.apiPivots))
 
