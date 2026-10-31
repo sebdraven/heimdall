@@ -29,9 +29,10 @@ type Job struct {
 }
 
 type Scheduler struct {
-	qtypes []string
-	out    chan<- Job
-	wake   chan struct{}
+	qtypes         []string
+	firstRunSpread time.Duration
+	out            chan<- Job
+	wake           chan struct{}
 
 	mu        sync.Mutex
 	entries   map[string]*entry
@@ -39,20 +40,30 @@ type Scheduler struct {
 	resolvers []string
 }
 
-func New(qtypes []string, out chan<- Job) *Scheduler {
+func New(qtypes []string, firstRunSpread time.Duration, out chan<- Job) *Scheduler {
 	return &Scheduler{
-		qtypes:  slices.Clone(qtypes),
-		out:     out,
-		wake:    make(chan struct{}, 1),
-		entries: make(map[string]*entry),
+		qtypes:         slices.Clone(qtypes),
+		firstRunSpread: firstRunSpread,
+		out:            out,
+		wake:           make(chan struct{}, 1),
+		entries:        make(map[string]*entry),
 	}
 }
 
-// Update replaces the watchlist. New domains are spread over their first
-// interval to avoid a burst at startup.
+// Update replaces the watchlist. New domains are spread over
+// min(interval, first-run spread), to avoid a burst without delaying their
+// first resolution by up to a whole interval.
 func (s *Scheduler) Update(domains []Domain, resolvers []string) {
-	now := time.Now()
+	s.update(time.Now(), domains, resolvers)
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Scheduler) update(now time.Time, domains []Domain, resolvers []string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	seen := make(map[string]struct{}, len(domains))
 	for _, d := range domains {
 		if d.Interval <= 0 {
@@ -68,7 +79,7 @@ func (s *Scheduler) Update(domains []Domain, resolvers []string) {
 			}
 			continue
 		}
-		e := &entry{Domain: d, next: now.Add(time.Duration(rand.Int64N(int64(d.Interval))))}
+		e := &entry{Domain: d, next: now.Add(time.Duration(rand.Int64N(int64(min(d.Interval, s.firstRunSpread)))))}
 		s.entries[d.FQDN] = e
 		heap.Push(&s.queue, e)
 	}
@@ -79,12 +90,6 @@ func (s *Scheduler) Update(domains []Domain, resolvers []string) {
 		}
 	}
 	s.resolvers = slices.Clone(resolvers)
-	s.mu.Unlock()
-
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -115,6 +120,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) due(now time.Time) ([]Job, time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// No slot is consumed without resolvers; the next Update wakes Run up.
+	if len(s.resolvers) == 0 {
+		return nil, idleWait
+	}
 	var jobs []Job
 	for s.queue.Len() > 0 {
 		e := s.queue[0]

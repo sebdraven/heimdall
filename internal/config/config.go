@@ -27,6 +27,7 @@ type Config struct {
 	BatchFlush     time.Duration
 	RemovalGrace   int
 	StateSnapshot  time.Duration
+	FirstRunSpread time.Duration
 
 	Listen         string
 	InsecureCookie bool
@@ -53,6 +54,7 @@ func Load() (*Config, error) {
 		BatchFlush:     p.duration("BATCH_FLUSH", 5*time.Second),
 		RemovalGrace:   p.int("REMOVAL_GRACE", 3),
 		StateSnapshot:  p.duration("STATE_SNAPSHOT", time.Minute),
+		FirstRunSpread: p.duration("FIRST_RUN_SPREAD", 5*time.Minute),
 
 		Listen:         p.str("LISTEN", ":8080"),
 		InsecureCookie: p.bool("INSECURE_COOKIE", false),
@@ -68,6 +70,7 @@ func Load() (*Config, error) {
 	p.positive("BATCH_SIZE", c.BatchSize)
 	p.positive("REMOVAL_GRACE", c.RemovalGrace)
 	p.positive("STATE_SNAPSHOT", int(c.StateSnapshot))
+	p.positive("FIRST_RUN_SPREAD", int(c.FirstRunSpread))
 	p.positive("RELOAD_INTERVAL", int(c.ReloadInterval))
 	p.positive("DNS_TIMEOUT", int(c.DNSTimeout))
 	p.positive("BATCH_FLUSH", int(c.BatchFlush))
