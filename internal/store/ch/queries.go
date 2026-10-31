@@ -75,6 +75,74 @@ func (s *Store) pdns(ctx context.Context, where string, arg any, limit int) ([]P
 	return out, rows.Err()
 }
 
+// NameMatch aggregates the pdns records of one owner name.
+type NameMatch struct {
+	RRName    string
+	RRTypes   []string
+	FirstSeen time.Time
+	LastSeen  time.Time
+	Count     uint64
+}
+
+// SearchNames returns the owner names matching the ILIKE pattern, most
+// recently seen first.
+func (s *Store) SearchNames(ctx context.Context, pattern string, limit int) ([]NameMatch, error) {
+	rows, err := s.conn.Query(ctx, `
+		SELECT rrname, arraySort(groupUniqArray(rrtype)) AS types, min(first_seen) AS fs, max(last_seen) AS ls, sum(count) AS n
+		FROM pdns
+		WHERE rrname ILIKE ?
+		GROUP BY rrname
+		ORDER BY ls DESC, rrname
+		LIMIT ?`, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NameMatch
+	for rows.Next() {
+		var m NameMatch
+		if err := rows.Scan(&m.RRName, &m.RRTypes, &m.FirstSeen, &m.LastSeen, &m.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ValueMatch aggregates the pdns records holding one value.
+type ValueMatch struct {
+	RData     string
+	RRType    string
+	Names     uint64
+	FirstSeen time.Time
+	LastSeen  time.Time
+}
+
+// SearchValues returns the (rdata, rrtype) pairs whose rdata matches the
+// ILIKE pattern, most recently seen first.
+func (s *Store) SearchValues(ctx context.Context, pattern string, limit int) ([]ValueMatch, error) {
+	rows, err := s.conn.Query(ctx, `
+		SELECT rdata, rrtype, uniqExact(rrname) AS names, min(first_seen) AS fs, max(last_seen) AS ls
+		FROM pdns
+		WHERE rdata ILIKE ?
+		GROUP BY rdata, rrtype
+		ORDER BY ls DESC, rdata, rrtype
+		LIMIT ?`, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ValueMatch
+	for rows.Next() {
+		var m ValueMatch
+		if err := rows.Scan(&m.RData, &m.RRType, &m.Names, &m.FirstSeen, &m.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // RdataSharing counts, for each value, the distinct pdns owner names that
 // held it, ignoring the names in exclude. Values held by no counted name are
 // absent.

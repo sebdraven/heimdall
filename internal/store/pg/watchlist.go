@@ -121,6 +121,13 @@ func (s *Store) DomainsByFQDN(ctx context.Context, fqdns []string) (map[string]D
 	return out, nil
 }
 
+// SearchDomains returns the watched domains whose fqdn matches the ILIKE
+// pattern, by fqdn.
+func (s *Store) SearchDomains(ctx context.Context, pattern string, limit int) ([]Domain, error) {
+	rows, err := s.pool.Query(ctx, domainSelect+` WHERE d.fqdn ILIKE $1 ORDER BY d.fqdn LIMIT $2`, pattern, limit)
+	return collect(rows, err, scanDomain)
+}
+
 func (s *Store) CreateDomain(ctx context.Context, d NewDomain) (Domain, error) {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO domains (fqdn, campaign_id, interval_seconds, enabled, source, added_by)

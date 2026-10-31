@@ -11,7 +11,7 @@
   <tbody>
   {{range .Data.Domains}}
     <tr>
-      <td><a href="/domains/{{.FQDN}}">{{.FQDN}}</a></td>
+      <td>{{domainLink .FQDN}}</td>
       <td>{{.IntervalSeconds}}s</td>
       <td>{{if .Enabled}}yes{{else}}<span class="muted">no</span>{{end}}</td>
       <td>{{.Source}}</td>

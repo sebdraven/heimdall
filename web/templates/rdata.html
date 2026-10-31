@@ -8,7 +8,7 @@
   <tbody>
   {{range .Data.Rows}}
     <tr>
-      <td><a href="/domains/{{.RRName}}">{{.RRName}}</a></td>
+      <td>{{domainLink .RRName}}</td>
       <td>{{.RRType}}</td>
       <td>{{with .Domain}}{{if .CampaignID}}<a href="/campaigns/{{.CampaignID}}">{{.Campaign}}</a>{{else}}<span class="muted">watched, no campaign</span>{{end}}{{else}}—{{end}}</td>
       <td class="nowrap">{{ts .FirstSeen}}</td>

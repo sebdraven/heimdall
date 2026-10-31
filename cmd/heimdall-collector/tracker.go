@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
@@ -130,10 +131,14 @@ func (t *tracker) requeue(lost []ch.TupleState) {
 	}
 }
 
+// prune drops the tuples of unwatched domains. Zone tuples are kept.
 func (t *tracker) prune(watched map[string]struct{}) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for k := range t.state {
+		if strings.HasPrefix(k.Domain, gjallarhorn.ZonePrefix) {
+			continue
+		}
 		if _, ok := watched[k.Domain]; !ok {
 			delete(t.state, k)
 			delete(t.dirty, k)

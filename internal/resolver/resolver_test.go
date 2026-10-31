@@ -70,6 +70,73 @@ func TestExtract(t *testing.T) {
 	}
 }
 
+func TestAuthorityAndZone(t *testing.T) {
+	msg := func(rrs ...string) *dns.Msg {
+		m := new(dns.Msg)
+		for _, s := range rrs {
+			rr, err := dns.NewRR(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Ns = append(m.Ns, rr)
+		}
+		return m
+	}
+	tests := []struct {
+		name string
+		msg  *dns.Msg
+		want []Answer
+		zone string
+	}{
+		{
+			name: "nodata with soa",
+			msg: msg(
+				"SyamCloud.com. 900 IN SOA NS1.syamcloud.com. hostmaster.syamcloud.com. 2026103101 7200 3600 1209600 300",
+				"syamcloud.com. 900 IN SOA ns1.syamcloud.com. hostmaster.syamcloud.com. 2026103101 7200 3600 1209600 300",
+			),
+			want: []Answer{{Name: "syamcloud.com", Type: "SOA", Value: "ns1.syamcloud.com hostmaster.syamcloud.com 2026103101 7200 3600 1209600 300"}},
+			zone: "syamcloud.com",
+		},
+		{
+			name: "ns only",
+			msg: msg(
+				"syamcloud.com. 3600 IN NS ns2.example.net.",
+				"syamcloud.com. 3600 IN NS NS1.example.net.",
+				"ns1.example.net. 3600 IN A 192.0.2.53",
+			),
+			want: []Answer{
+				{Name: "syamcloud.com", Type: "NS", Value: "ns1.example.net"},
+				{Name: "syamcloud.com", Type: "NS", Value: "ns2.example.net"},
+			},
+			zone: "syamcloud.com",
+		},
+		{
+			name: "soa preferred over ns",
+			msg: msg(
+				"com. 900 IN NS a.gtld-servers.net.",
+				"syamcloud.com. 900 IN SOA ns1.syamcloud.com. hostmaster.syamcloud.com. 1 7200 3600 1209600 300",
+			),
+			want: []Answer{
+				{Name: "com", Type: "NS", Value: "a.gtld-servers.net"},
+				{Name: "syamcloud.com", Type: "SOA", Value: "ns1.syamcloud.com hostmaster.syamcloud.com 1 7200 3600 1209600 300"},
+			},
+			zone: "syamcloud.com",
+		},
+		{name: "no authority", msg: new(dns.Msg), want: []Answer{}, zone: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Authority(tt.msg)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("authority = %+v, want %+v", got, tt.want)
+			}
+			if z := Zone(got); z != tt.zone {
+				t.Errorf("zone = %q, want %q", z, tt.zone)
+			}
+		})
+	}
+}
+
 func TestAnswerHash(t *testing.T) {
 	a := AnswerHash("NOERROR", []string{"192.0.2.1", "192.0.2.2"})
 	b := AnswerHash("NOERROR", []string{"192.0.2.2", "192.0.2.1"})

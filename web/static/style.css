@@ -40,6 +40,8 @@ header {
 }
 
 header nav { display: flex; gap: 1rem; flex: 1; }
+.search { margin: 0; }
+.search input { width: 18rem; max-width: 40vw; }
 .brand { font-weight: 700; letter-spacing: .02em; }
 .logout { display: flex; align-items: center; gap: .5rem; color: var(--muted); }
 

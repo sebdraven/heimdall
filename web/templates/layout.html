@@ -17,6 +17,9 @@
     <a href="/events">Events</a>
     {{if $.Can "admin"}}<a href="/admin">Admin</a>{{end}}
   </nav>
+  <form class="search" method="get" action="/search" role="search">
+    <input type="search" name="q" value="{{block "search_q" $}}{{end}}" placeholder="Domain, IP or value" aria-label="Search">
+  </form>
   <form class="logout" method="post" action="/logout">
     {{template "csrf" $}}
     <span>{{.Username}} ({{.Role}})</span>

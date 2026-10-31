@@ -44,6 +44,30 @@ Going from a watched name to its IPs therefore follows the CNAME chain: query
 only sees the A/AAAA/NS owned by `fqdn` itself, and may return CNAME targets
 that are not in the watchlist.
 
+### Authority section
+
+A NS or SOA query on a name that is not a zone apex (`proxy.syamcloud.com`)
+is answered NOERROR with an empty answer: the zone's SOA, sometimes its NS,
+come in the authority section. The collector keeps the NS and SOA of that
+section in `observations.authority`, and `pdns_authority_mv` feeds them to
+`pdns` under their owner, the zone apex, when the rcode is NOERROR.
+
+The zone is then tracked like a watched domain under the name `zone:<zone>`
+(same hysteresis, event kinds and `tuple_state`, campaign of the name that
+was queried), at most once per zone, qtype and resolver per 60 s:
+
+- SOA: derived from the authority section of a SOA query, not written to
+  `observations`;
+- NS: an empty NOERROR answer of any qtype triggers a real NS query on the
+  zone, under the resolver's rate limit, so that `ns_sinkhole` and
+  `ns_parking` apply to the zone. It is written to `observations` under the
+  zone name, which feeds `pdns`. Zones in the watchlist are not queried
+  again.
+
+In the UI, `zone:X` reads "zone X" and links to `/domains/X`, whose change
+timeline includes the changes of `zone:X`. The page of a name that is not an
+apex shows the NS and SOA of its zone from passive DNS.
+
 ## Quick start
 
 ```sh
@@ -59,6 +83,18 @@ docker compose run --rm -v "$PWD/domains.txt:/domains.txt:ro" api \
 The UI listens on http://127.0.0.1:8080 only. Put a TLS reverse proxy in front
 for remote access; set `HEIMDALL_INSECURE_COOKIE=true` only for local
 plain-HTTP development.
+
+### Upgrading ClickHouse
+
+`deploy/clickhouse/init.sql` only runs on an empty volume. On an existing
+installation, apply the migrations in order before starting the new
+collector, which writes columns they add. They are idempotent:
+
+```sh
+docker compose exec -T clickhouse sh -c \
+  'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --multiquery' \
+  < deploy/clickhouse/migrations/0002_authority.sql
+```
 
 ## API
 
@@ -79,6 +115,7 @@ POST   /api/campaigns               {"name", "family", "description"}
 GET    /api/campaigns/{id}/domains  same fields as GET /api/domains, 404 if unknown
 GET    /api/events?since=&until=&kind=&campaign=&domain=&limit=
 GET    /api/pivots/{fqdn}           domains sharing an A/AAAA/NS value, with overlap
+GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
 GET    /healthz                     no auth
 ```
 
@@ -90,6 +127,32 @@ name is not watched, which is not a 404), the latest answer per qtype and
 resolver over the last 7 days, the most recent changes (`limit`, default 200,
 max 1000) and up to 1000 passive DNS records owned by the name. Dates are
 RFC 3339 UTC.
+
+## Search
+
+The search bar (`/search?q=`) and `/api/search` take a domain, an IP or a
+value:
+
+- an IP goes to `/rdata/{ip}`;
+- a name in the watchlist or owning pdns records, without `*`, goes to
+  `/domains/{fqdn}`;
+- anything else is a case-insensitive pattern over watchlist names, pdns
+  names and pdns values: `*` matches any characters (`*.otax.fun`,
+  `node*`), a query without `*` matches as a substring, `%` and `_` are
+  literal. At least 3 characters besides `*` are required.
+
+Each source returns at most 200 rows, most recently seen first for pdns, and
+is flagged as truncated when it reaches that limit.
+
+`/api/search` applies the same rules without redirecting and returns
+`{"query", "kind", "domains", "names", "values", "truncated"}`. `kind` is
+`ip`, `exact` or `pattern`; `domains` has the fields of `GET /api/domains`;
+`names` are `{"rrname", "rrtypes", "first_seen", "last_seen", "count",
+"watched", "campaign"}`; `values` are `{"rdata", "rrtype", "names",
+"first_seen", "last_seen"}`, `names` counting distinct owners; `truncated`
+has one boolean per source. For an IP, `names` are the owners that held it
+(from at most 1000 pdns records) and `domains` the watched ones among them.
+`limit` defaults to 200, at most 200. An empty or too short `q` is a 400.
 
 Roles: `viewer` reads; `analyst` also manages domains and campaigns; `admin`
 also manages resolvers and NS classes and reads the audit log.

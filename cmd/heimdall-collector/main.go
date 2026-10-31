@@ -68,6 +68,7 @@ func run() error {
 	sched := scheduler.New(resolver.QTypes, cfg.FirstRunSpread, jobs)
 	limits := &limiters{m: map[string]*rate.Limiter{}}
 	var classes atomic.Pointer[[]gjallarhorn.NSClass]
+	var watchedSet atomic.Pointer[map[string]struct{}]
 
 	reload := func() error {
 		domains, err := pgs.EnabledDomains(ctx)
@@ -104,6 +105,7 @@ func run() error {
 
 		limits.update(enabled)
 		classes.Store(&cs)
+		watchedSet.Store(&watched)
 		tr.prune(watched)
 		sched.Update(sd, addrs)
 		log.Info("watchlist reloaded", "domains", len(sd), "resolvers", len(addrs), "ns_classes", len(cs))
@@ -158,6 +160,13 @@ func run() error {
 	}()
 
 	client := resolver.New(cfg.DNSTimeout)
+	m := &measurer{
+		tr: tr, zones: newZoneCache(), client: client, wait: limits.wait,
+		watched: func(fqdn string) bool {
+			_, ok := (*watchedSet.Load())[fqdn]
+			return ok
+		},
+	}
 	var wg sync.WaitGroup
 	for range cfg.Workers {
 		wg.Go(func() {
@@ -169,8 +178,10 @@ func run() error {
 					continue
 				}
 				obs := client.Resolve(context.WithoutCancel(ctx), job.Resolver, job.Domain, job.QType)
-				changes, events, release := tr.observe(obs, job.Campaign, *classes.Load())
-				items <- ch.Item{Obs: obs, Changes: changes, Events: events}
+				out, release := m.measure(ctx, obs, job.Campaign, *classes.Load())
+				for _, it := range out {
+					items <- it
+				}
 				release()
 			}
 		})
