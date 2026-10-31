@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -179,40 +180,57 @@ func parseFQDNList(text string) (fqdns, bad []string) {
 	return slices.Compact(fqdns), bad
 }
 
-func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
-	fqdn := resolver.Name(r.PathValue("fqdn"))
-	var domain *pg.Domain
-	d, err := s.pg.Domain(r.Context(), fqdn)
+const (
+	domainChanges    = 200
+	domainChangesMax = 1000
+	domainPDNS       = 1000
+)
+
+// domainDetail is what /domains/{fqdn} shows. Domain is nil outside the
+// watchlist.
+type domainDetail struct {
+	Domain  *pg.Domain
+	Current []ch.Current
+	Changes []gjallarhorn.Change
+	PDNS    []ch.PDNSRecord
+}
+
+func (s *server) loadDomain(ctx context.Context, fqdn string, changes int) (domainDetail, error) {
+	var dd domainDetail
+	d, err := s.pg.Domain(ctx, fqdn)
 	switch {
 	case err == nil:
-		domain = &d
+		dd.Domain = &d
 	case !errors.Is(err, pg.ErrNotFound):
+		return dd, err
+	}
+	if dd.Current, err = s.ch.CurrentState(ctx, fqdn); err != nil {
+		return dd, fmt.Errorf("current state: %w", err)
+	}
+	if dd.Changes, err = s.ch.DomainChanges(ctx, fqdn, changes); err != nil {
+		return dd, fmt.Errorf("changes: %w", err)
+	}
+	if dd.PDNS, err = s.ch.PDNSByName(ctx, fqdn, domainPDNS); err != nil {
+		return dd, fmt.Errorf("pdns: %w", err)
+	}
+	return dd, nil
+}
+
+func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
+	fqdn := resolver.Name(r.PathValue("fqdn"))
+	dd, err := s.loadDomain(r.Context(), fqdn, domainChanges)
+	if err != nil {
 		s.storeFail(w, r, err)
 		return
 	}
-	current, err := s.ch.CurrentState(r.Context(), fqdn)
-	if err != nil {
-		s.fail(w, r, http.StatusInternalServerError, "current state", err)
-		return
-	}
-	changes, err := s.ch.DomainChanges(r.Context(), fqdn, 200)
-	if err != nil {
-		s.fail(w, r, http.StatusInternalServerError, "changes", err)
-		return
-	}
-	records, err := s.ch.PDNSByName(r.Context(), fqdn, 1000)
-	if err != nil {
-		s.fail(w, r, http.StatusInternalServerError, "pdns", err)
-		return
-	}
-	values, exclude := sharingQuery(fqdn, current)
+	values, exclude := sharingQuery(fqdn, dd.Current)
 	sharing, err := s.ch.RdataSharing(r.Context(), values, exclude)
 	if err != nil {
 		s.fail(w, r, http.StatusInternalServerError, "rdata sharing", err)
 		return
 	}
 	s.render(w, r, "domain", http.StatusOK, map[string]any{
-		"FQDN": fqdn, "Domain": domain, "Current": current, "Changes": changes, "PDNS": records, "Sharing": sharing,
+		"FQDN": fqdn, "Domain": dd.Domain, "Current": dd.Current, "Changes": dd.Changes, "PDNS": dd.PDNS, "Sharing": sharing,
 	})
 }
 
