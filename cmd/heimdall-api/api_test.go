@@ -26,30 +26,69 @@ func TestDomainDetailJSON(t *testing.T) {
 		Current: []ch.Current{
 			{QType: "A", Resolver: "9.9.9.9:53", TS: t0.Add(time.Hour).In(cet), Rcode: "NOERROR", TTL: 300, Rdata: []string{"192.0.2.1"}},
 			{QType: "AAAA", Resolver: "9.9.9.9:53", TS: t0.In(cet), Rcode: "NOERROR"},
+			{QType: "A", Resolver: "1.1.1.1:53", TS: t0.In(cet), Rcode: "NOERROR", TTL: 60, Rdata: []string{"104.16.0.1", "192.0.2.9"}},
 		},
-		Changes: []gjallarhorn.Change{{
-			TS: t0.In(cet), Key: gjallarhorn.Key{Domain: "www.x.example", QType: "A", Resolver: "9.9.9.9:53"},
-			PrevTrackedHash: 1, NewTrackedHash: 2, PrevRcode: "NXDOMAIN", NewRcode: "NOERROR",
-			Added: []string{"192.0.2.1"}, NewTTL: 300,
-		}},
+		Changes: []gjallarhorn.Change{
+			{
+				TS: t0.Add(time.Minute).In(cet), Key: gjallarhorn.Key{Domain: "zone:www.x.example", QType: "NS", Resolver: "9.9.9.9:53"},
+				PrevTrackedHash: 3, NewTrackedHash: 4, PrevRcode: "NOERROR", NewRcode: "NOERROR",
+				Added: []string{"ns1.sinkhole.example"}, Removed: []string{"ns1.x.example"}, PrevTTL: 3600, NewTTL: 3600,
+			},
+			{
+				TS: t0.In(cet), Key: gjallarhorn.Key{Domain: "www.x.example", QType: "A", Resolver: "9.9.9.9:53"},
+				PrevTrackedHash: 1, NewTrackedHash: 2, PrevRcode: "NXDOMAIN", NewRcode: "NOERROR",
+				Added: []string{"192.0.2.1"}, NewTTL: 300,
+			},
+		},
 		PDNS: []ch.PDNSRecord{
 			{RRName: "www.x.example", RRType: "A", RData: "192.0.2.1", FirstSeen: t0.In(cet), LastSeen: t0.Add(time.Hour).In(cet), Count: 3},
 		},
 	}
 	want := `{"domain":{"fqdn":"www.x.example","campaign":"spynote","interval_seconds":300,"enabled":true,"source":"web:alice","added_at":"2026-03-01T12:00:00Z"},` +
 		`"current":[{"qtype":"A","resolver":"9.9.9.9:53","ts":"2026-03-01T13:00:00Z","rcode":"NOERROR","ttl":300,"rdata":["192.0.2.1"]},` +
-		`{"qtype":"AAAA","resolver":"9.9.9.9:53","ts":"2026-03-01T12:00:00Z","rcode":"NOERROR","ttl":0,"rdata":[]}],` +
-		`"changes":[{"ts":"2026-03-01T12:00:00Z","qtype":"A","resolver":"9.9.9.9:53","prev_rcode":"NXDOMAIN","new_rcode":"NOERROR","added":["192.0.2.1"],"removed":[],"prev_ttl":0,"new_ttl":300}],` +
+		`{"qtype":"AAAA","resolver":"9.9.9.9:53","ts":"2026-03-01T12:00:00Z","rcode":"NOERROR","ttl":0,"rdata":[]},` +
+		`{"qtype":"A","resolver":"1.1.1.1:53","ts":"2026-03-01T12:00:00Z","rcode":"NOERROR","ttl":60,"rdata":["104.16.0.1","192.0.2.9"],"cdn":{"104.16.0.1":"Cloudflare"}}],` +
+		`"changes":[{"ts":"2026-03-01T12:01:00Z","scope":"zone","qtype":"NS","resolver":"9.9.9.9:53","prev_rcode":"NOERROR","new_rcode":"NOERROR","added":["ns1.sinkhole.example"],"removed":["ns1.x.example"],"prev_ttl":3600,"new_ttl":3600},` +
+		`{"ts":"2026-03-01T12:00:00Z","scope":"name","qtype":"A","resolver":"9.9.9.9:53","prev_rcode":"NXDOMAIN","new_rcode":"NOERROR","added":["192.0.2.1"],"removed":[],"prev_ttl":0,"new_ttl":300}],` +
 		`"pdns":[{"rrname":"www.x.example","rrtype":"A","rdata":"192.0.2.1","first_seen":"2026-03-01T12:00:00Z","last_seen":"2026-03-01T13:00:00Z","count":3}]}`
-	if got := encode(t, toDomainDetailJSON(dd)); got != want {
+	if got := encode(t, toDomainDetailJSON(dd, testCDN())); got != want {
 		t.Errorf("detail =\n%s\nwant\n%s", got, want)
 	}
 }
 
 func TestDomainDetailJSONUnwatched(t *testing.T) {
 	want := `{"domain":null,"current":[],"changes":[],"pdns":[]}`
-	if got := encode(t, toDomainDetailJSON(domainDetail{})); got != want {
+	if got := encode(t, toDomainDetailJSON(domainDetail{}, testCDN())); got != want {
 		t.Errorf("detail = %s, want %s", got, want)
+	}
+}
+
+func TestSplitCDN(t *testing.T) {
+	kept, excluded := splitCDN([]ch.PivotValue{
+		{RRType: "A", RData: "104.16.0.1"},
+		{RRType: "A", RData: "192.0.2.1"},
+		{RRType: "AAAA", RData: "2001:db8::1"},
+		{RRType: "AAAA", RData: "2606:4700::6810:84e5"},
+		{RRType: "NS", RData: "ns1.example.net"},
+		{RRType: "NS", RData: "104.16.0.2"},
+	}, testCDN())
+	var values []string
+	for _, v := range kept {
+		values = append(values, v.RRType+"/"+v.RData)
+	}
+	if got, want := strings.Join(values, " "), "A/192.0.2.1 AAAA/2001:db8::1 NS/ns1.example.net NS/104.16.0.2"; got != want {
+		t.Errorf("kept = %s, want %s", got, want)
+	}
+	if got, want := encode(t, excluded), `[{"value":"104.16.0.1","provider":"Cloudflare"},{"value":"2606:4700::6810:84e5","provider":"Cloudflare"}]`; got != want {
+		t.Errorf("excluded = %s, want %s", got, want)
+	}
+
+	kept, excluded = splitCDN([]ch.PivotValue{{RRType: "A", RData: "192.0.2.1"}}, testCDN())
+	if len(kept) != 1 || encode(t, excluded) != "[]" {
+		t.Errorf("no CDN value: kept %v, excluded %s", kept, encode(t, excluded))
+	}
+	if got := encode(t, pivotsJSON{Pivots: []pivotJSON{}, ExcludedCDN: excluded}); got != `{"pivots":[],"excluded_cdn":[]}` {
+		t.Errorf("empty pivots = %s", got)
 	}
 }
 

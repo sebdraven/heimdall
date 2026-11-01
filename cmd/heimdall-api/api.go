@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebdraven/heimdall/internal/auth"
+	"github.com/sebdraven/heimdall/internal/cdn"
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
 	"github.com/sebdraven/heimdall/internal/cof"
 	"github.com/sebdraven/heimdall/internal/resolver"
@@ -48,16 +49,18 @@ func toDomainsJSON(ds []pg.Domain) []domainJSON {
 }
 
 type currentJSON struct {
-	QType    string    `json:"qtype"`
-	Resolver string    `json:"resolver"`
-	TS       time.Time `json:"ts"`
-	Rcode    string    `json:"rcode"`
-	TTL      uint32    `json:"ttl"`
-	Rdata    []string  `json:"rdata"`
+	QType    string            `json:"qtype"`
+	Resolver string            `json:"resolver"`
+	TS       time.Time         `json:"ts"`
+	Rcode    string            `json:"rcode"`
+	TTL      uint32            `json:"ttl"`
+	Rdata    []string          `json:"rdata"`
+	CDN      map[string]string `json:"cdn,omitempty"`
 }
 
 type changeJSON struct {
 	TS        time.Time `json:"ts"`
+	Scope     string    `json:"scope"`
 	QType     string    `json:"qtype"`
 	Resolver  string    `json:"resolver"`
 	PrevRcode string    `json:"prev_rcode"`
@@ -92,7 +95,30 @@ func strs(v []string) []string {
 	return v
 }
 
-func toDomainDetailJSON(dd domainDetail) domainDetailJSON {
+// cdnValues maps the CDN addresses among values to their provider, nil if
+// there are none.
+func cdnValues(values []string, cl *cdn.Classifier) map[string]string {
+	var out map[string]string
+	for _, v := range values {
+		if p, ok := cl.Classify(v); ok {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[v] = p
+		}
+	}
+	return out
+}
+
+// changeScope tells a change of the name from one of its zone.
+func changeScope(domain string) string {
+	if strings.HasPrefix(domain, gjallarhorn.ZonePrefix) {
+		return "zone"
+	}
+	return "name"
+}
+
+func toDomainDetailJSON(dd domainDetail, cl *cdn.Classifier) domainDetailJSON {
 	out := domainDetailJSON{
 		Current: make([]currentJSON, 0, len(dd.Current)),
 		Changes: make([]changeJSON, 0, len(dd.Changes)),
@@ -105,11 +131,12 @@ func toDomainDetailJSON(dd domainDetail) domainDetailJSON {
 	for _, c := range dd.Current {
 		out.Current = append(out.Current, currentJSON{
 			QType: c.QType, Resolver: c.Resolver, TS: c.TS.UTC(), Rcode: c.Rcode, TTL: c.TTL, Rdata: strs(c.Rdata),
+			CDN: cdnValues(c.Rdata, cl),
 		})
 	}
 	for _, c := range dd.Changes {
 		out.Changes = append(out.Changes, changeJSON{
-			TS: c.TS.UTC(), QType: c.QType, Resolver: c.Resolver, PrevRcode: c.PrevRcode, NewRcode: c.NewRcode,
+			TS: c.TS.UTC(), Scope: changeScope(c.Domain), QType: c.QType, Resolver: c.Resolver, PrevRcode: c.PrevRcode, NewRcode: c.NewRcode,
 			Added: strs(c.Added), Removed: strs(c.Removed), PrevTTL: c.PrevTTL, NewTTL: c.NewTTL,
 		})
 	}
@@ -157,6 +184,32 @@ type pivotJSON struct {
 	Target  periodJSON  `json:"target"`
 	Other   periodJSON  `json:"other"`
 	Overlap *periodJSON `json:"overlap"`
+}
+
+type excludedCDNJSON struct {
+	Value    string `json:"value"`
+	Provider string `json:"provider"`
+}
+
+type pivotsJSON struct {
+	Pivots      []pivotJSON       `json:"pivots"`
+	ExcludedCDN []excludedCDNJSON `json:"excluded_cdn"`
+}
+
+// splitCDN sets aside the A and AAAA values that are CDN addresses, which
+// unrelated names share.
+func splitCDN(values []ch.PivotValue, cl *cdn.Classifier) (kept []ch.PivotValue, excluded []excludedCDNJSON) {
+	excluded = []excludedCDNJSON{}
+	for _, v := range values {
+		if v.RRType == "A" || v.RRType == "AAAA" {
+			if p, ok := cl.Classify(v.RData); ok {
+				excluded = append(excluded, excludedCDNJSON{Value: v.RData, Provider: p})
+				continue
+			}
+		}
+		kept = append(kept, v)
+	}
+	return kept, excluded
 }
 
 type searchNameJSON struct {
@@ -312,7 +365,7 @@ func (s *server) apiDomainDetail(w http.ResponseWriter, r *http.Request) {
 		s.apiStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDomainDetailJSON(dd))
+	writeJSON(w, http.StatusOK, toDomainDetailJSON(dd, s.cdn))
 }
 
 func (s *server) apiCampaignDomains(w http.ResponseWriter, r *http.Request) {
@@ -564,13 +617,20 @@ func (s *server) apiSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) apiPivots(w http.ResponseWriter, r *http.Request) {
 	fqdn := resolver.Name(r.PathValue("fqdn"))
-	pivots, err := s.ch.Pivots(r.Context(), fqdn, intParam(r, "limit", 1000, 10000))
+	values, err := s.ch.PivotValues(r.Context(), fqdn)
+	if err != nil {
+		s.log.Error("pivot values", "err", err)
+		apiError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	kept, excluded := splitCDN(values, s.cdn)
+	pivots, err := s.ch.Pivots(r.Context(), fqdn, kept, intParam(r, "limit", 1000, 10000))
 	if err != nil {
 		s.log.Error("pivots", "err", err)
 		apiError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	out := make([]pivotJSON, 0, len(pivots))
+	out := pivotsJSON{Pivots: make([]pivotJSON, 0, len(pivots)), ExcludedCDN: excluded}
 	for _, p := range pivots {
 		pj := pivotJSON{
 			Domain: p.Domain, RRType: p.RRType, RData: p.RData,
@@ -580,7 +640,7 @@ func (s *server) apiPivots(w http.ResponseWriter, r *http.Request) {
 			o := periodJSON(*p.Overlap)
 			pj.Overlap = &o
 		}
-		out = append(out, pj)
+		out.Pivots = append(out.Pivots, pj)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

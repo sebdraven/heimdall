@@ -5,10 +5,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sebdraven/heimdall/internal/cdn"
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
 	"github.com/sebdraven/heimdall/internal/config"
 	"github.com/sebdraven/heimdall/internal/store/ch"
@@ -66,10 +68,22 @@ func testServer(t *testing.T) *server {
 	return s
 }
 
+func testCDN() *cdn.Classifier {
+	return cdn.New([]cdn.Prefix{
+		{Prefix: netip.MustParsePrefix("104.16.0.0/13"), Provider: "Cloudflare"},
+		{Prefix: netip.MustParsePrefix("2606:4700::/32"), Provider: "Cloudflare"},
+	})
+}
+
 func renderPage(t *testing.T, page string, data any) string {
 	t.Helper()
+	return renderWith(t, testServer(t), page, data)
+}
+
+func renderWith(t *testing.T, s *server, page string, data any) string {
+	t.Helper()
 	rec := httptest.NewRecorder()
-	testServer(t).render(rec, httptest.NewRequest(http.MethodGet, "/", nil), page, http.StatusOK, data)
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), page, http.StatusOK, data)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("render %s: status %d: %s", page, rec.Code, rec.Body)
 	}
@@ -100,12 +114,49 @@ func TestSharingQuery(t *testing.T) {
 		{QType: "CNAME", Rdata: []string{"CDN.Y.example."}},
 		{QType: "A", Rdata: []string{"192.0.2.2", "192.0.2.1"}},
 		{QType: "A", Resolver: "1.1.1.1:53", Rdata: []string{"192.0.2.1"}},
-	})
+		{QType: "A", Resolver: "8.8.8.8:53", Rdata: []string{"104.16.0.1"}},
+	}, testCDN())
 	if got, want := strings.Join(values, " "), "192.0.2.1 192.0.2.2 CDN.Y.example."; got != want {
 		t.Errorf("values = %s, want %s", got, want)
 	}
 	if got, want := strings.Join(exclude, " "), "cdn.y.example www.x.example"; got != want {
 		t.Errorf("exclude = %s, want %s", got, want)
+	}
+}
+
+func TestRenderCDN(t *testing.T) {
+	s := testServer(t)
+	s.cdn.Set([]cdn.Prefix{{Prefix: netip.MustParsePrefix("104.16.0.0/13"), Provider: "Cloudflare"}})
+	const marker = `<span class="cdn">CDN Cloudflare</span>`
+
+	body := renderWith(t, s, "domain", map[string]any{
+		"FQDN": "www.x.example", "Domain": (*pg.Domain)(nil),
+		"Current": []ch.Current{{QType: "A", Resolver: "9.9.9.9:53", Rcode: "NOERROR", Rdata: []string{"104.16.0.1", "192.0.2.1"}}},
+		"Changes": []gjallarhorn.Change{{Key: gjallarhorn.Key{Domain: "www.x.example", QType: "A"}, Added: []string{"104.16.0.1"}, Removed: []string{"192.0.2.3"}}},
+		"Sharing": map[string]uint64{"104.16.0.1": 40, "192.0.2.1": 2},
+	})
+	if n := strings.Count(body, marker); n != 2 {
+		t.Errorf("domain page: %d CDN markers, want 2 (current state and timeline)", n)
+	}
+	if !strings.Contains(body, `<span class="badge">2 names</span>`) || strings.Contains(body, "40 names") {
+		t.Error("domain page: sharing badge missing for 192.0.2.1 or shown for a CDN address")
+	}
+
+	body = renderWith(t, s, "rdata", buildRdataView("104.16.0.1", nil, nil, rdataLimit))
+	if !strings.Contains(body, `<p class="notice">CDN address (Cloudflare): sharing it is not an infrastructure link</p>`) {
+		t.Error("rdata page: CDN banner missing")
+	}
+	if body := renderWith(t, s, "rdata", rdataFixture(rdataLimit)); strings.Contains(body, "CDN address") {
+		t.Error("rdata page: CDN banner on a non-CDN address")
+	}
+
+	body = renderWith(t, s, "search", searchView{Query: "104.16", Kind: "pattern", Limit: searchLimit, Values: []ch.ValueMatch{
+		{RData: "104.16.0.1", RRType: "A", Names: 3},
+		{RData: "192.0.2.1", RRType: "A", Names: 1},
+		{RData: "cdn.example", RRType: "CNAME", Names: 1},
+	}})
+	if n := strings.Count(body, marker); n != 1 {
+		t.Errorf("search page: %d CDN markers, want 1", n)
 	}
 }
 

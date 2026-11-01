@@ -1,5 +1,6 @@
 {{define "title"}}{{.Data.Value}} · Heimdall{{end}}
 {{define "content"}}
+{{with cdn .Data.Value}}<p class="notice">CDN address ({{.}}): sharing it is not an infrastructure link</p>{{end}}
 <h1><code>{{.Data.Value}}</code></h1>
 <p class="meta">{{.Data.Names}} distinct names · {{.Data.Outside}} outside the watchlist{{if .Data.Truncated}} · limited to the {{.Data.Limit}} most recent records, counts are partial{{end}}</p>
 

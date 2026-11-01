@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sebdraven/heimdall/internal/auth"
+	"github.com/sebdraven/heimdall/internal/cdn"
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
 	"github.com/sebdraven/heimdall/internal/config"
 	"github.com/sebdraven/heimdall/internal/store/ch"
@@ -36,10 +37,12 @@ type server struct {
 	auth  *auth.Manager
 	ipLim *auth.Limiter
 	usLim *auth.Limiter
+	cdn   *cdn.Classifier
 	pages map[string]*template.Template
 }
 
 func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Store) (*server, error) {
+	cdns := cdn.New(nil)
 	funcs := template.FuncMap{
 		"ts": func(t time.Time) string {
 			if t.IsZero() {
@@ -48,6 +51,11 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 			return t.UTC().Format("2006-01-02 15:04:05")
 		},
 		"domainLink": domainLink,
+		// cdn returns the CDN provider of an IP value, or "".
+		"cdn": func(v string) string {
+			p, _ := cdns.Classify(v)
+			return p
+		},
 	}
 	pages := make(map[string]*template.Template, len(pageNames))
 	for _, name := range pageNames {
@@ -66,6 +74,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		auth:  auth.NewManager(pgs, cfg.SessionTTL, !cfg.InsecureCookie),
 		ipLim: auth.NewLimiter(12*time.Second, 10),
 		usLim: auth.NewLimiter(30*time.Second, 5),
+		cdn:   cdns,
 		pages: pages,
 	}, nil
 }
@@ -104,6 +113,8 @@ func (s *server) routes() http.Handler {
 	mux.Handle("DELETE /admin/resolvers/{id}", page(admin, s.deleteResolver))
 	mux.Handle("POST /admin/nsclasses", page(admin, s.createNSClass))
 	mux.Handle("DELETE /admin/nsclasses/{id}", page(admin, s.deleteNSClass))
+	mux.Handle("POST /admin/cdnprefixes", page(admin, s.createCDNPrefix))
+	mux.Handle("DELETE /admin/cdnprefixes/{id}", page(admin, s.deleteCDNPrefix))
 
 	mux.Handle("GET /api/pdns/query/{rrname}", api(viewer, s.apiPDNSQuery))
 	mux.Handle("GET /api/pdns/rdata/{value...}", api(viewer, s.apiPDNSRdata))
@@ -188,6 +199,38 @@ func (s *server) housekeeping(ctx context.Context) {
 			}
 			s.ipLim.Sweep()
 			s.usLim.Sweep()
+		}
+	}
+}
+
+const cdnReload = time.Minute
+
+// loadCDN replaces the classifier's prefixes with those in Postgres.
+func (s *server) loadCDN(ctx context.Context) error {
+	rows, err := s.pg.CDNPrefixes(ctx)
+	if err != nil {
+		return fmt.Errorf("cdn prefixes: %w", err)
+	}
+	ps := make([]cdn.Prefix, 0, len(rows))
+	for _, r := range rows {
+		ps = append(ps, cdn.Prefix{Prefix: r.Prefix, Provider: r.Provider})
+	}
+	s.cdn.Set(ps)
+	return nil
+}
+
+// reloadCDN keeps the last prefixes loaded when Postgres fails.
+func (s *server) reloadCDN(ctx context.Context) {
+	t := time.NewTicker(cdnReload)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := s.loadCDN(ctx); err != nil {
+				s.log.Warn("reload cdn prefixes", "err", err)
+			}
 		}
 	}
 }

@@ -54,7 +54,7 @@
   <tbody>
   {{range .Values}}
     <tr>
-      <td><a href="/rdata/{{.RData}}"><code>{{.RData}}</code></a></td>
+      <td><a href="/rdata/{{.RData}}"><code>{{.RData}}</code></a>{{template "cdn_marker" .RData}}</td>
       <td>{{.RRType}}</td>
       <td>{{.Names}}</td>
       <td class="nowrap">{{ts .FirstSeen}}</td>

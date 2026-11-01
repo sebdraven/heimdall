@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebdraven/heimdall/internal/auth"
+	"github.com/sebdraven/heimdall/internal/cdn"
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
@@ -191,7 +192,7 @@ const (
 )
 
 // domainDetail is what /domains/{fqdn} shows. Domain is nil outside the
-// watchlist.
+// watchlist. Changes include those of the zone "zone:"+fqdn.
 type domainDetail struct {
 	Domain  *pg.Domain
 	Current []ch.Current
@@ -214,6 +215,11 @@ func (s *server) loadDomain(ctx context.Context, fqdn string, changes int) (doma
 	if dd.Changes, err = s.ch.DomainChanges(ctx, fqdn, changes); err != nil {
 		return dd, fmt.Errorf("changes: %w", err)
 	}
+	zoneChanges, err := s.ch.DomainChanges(ctx, gjallarhorn.ZonePrefix+fqdn, changes)
+	if err != nil {
+		return dd, fmt.Errorf("zone changes: %w", err)
+	}
+	dd.Changes = mergeChanges(dd.Changes, zoneChanges, changes)
 	if dd.PDNS, err = s.ch.PDNSByName(ctx, fqdn, domainPDNS); err != nil {
 		return dd, fmt.Errorf("pdns: %w", err)
 	}
@@ -227,7 +233,7 @@ func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
 		s.storeFail(w, r, err)
 		return
 	}
-	values, exclude := sharingQuery(fqdn, dd.Current)
+	values, exclude := sharingQuery(fqdn, dd.Current, s.cdn)
 	sharing, err := s.ch.RdataSharing(r.Context(), values, exclude)
 	if err != nil {
 		s.fail(w, r, http.StatusInternalServerError, "rdata sharing", err)
@@ -238,12 +244,6 @@ func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, "zone", err)
 		return
 	}
-	zoneChanges, err := s.ch.DomainChanges(r.Context(), gjallarhorn.ZonePrefix+fqdn, domainChanges)
-	if err != nil {
-		s.fail(w, r, http.StatusInternalServerError, "zone changes", err)
-		return
-	}
-	dd.Changes = mergeChanges(dd.Changes, zoneChanges, domainChanges)
 	s.render(w, r, "domain", http.StatusOK, map[string]any{
 		"FQDN": fqdn, "Domain": dd.Domain, "Current": dd.Current, "Changes": dd.Changes, "PDNS": dd.PDNS, "Sharing": sharing,
 		"Zone": zone,
@@ -312,13 +312,17 @@ func currentZoneRecords(records []ch.PDNSRecord) []ch.PDNSRecord {
 	return out
 }
 
-// sharingQuery returns the distinct values shown in Current state and the
-// owner names not to count: the domain itself and its CNAME targets, which
-// own the values reached through the chain.
-func sharingQuery(fqdn string, current []ch.Current) (values, exclude []string) {
+// sharingQuery returns the distinct values shown in Current state, CDN
+// addresses aside, and the owner names not to count: the domain itself and
+// its CNAME targets, which own the values reached through the chain.
+func sharingQuery(fqdn string, current []ch.Current, cl *cdn.Classifier) (values, exclude []string) {
 	exclude = []string{fqdn}
 	for _, c := range current {
-		values = append(values, c.Rdata...)
+		for _, v := range c.Rdata {
+			if _, isCDN := cl.Classify(v); !isCDN {
+				values = append(values, v)
+			}
+		}
 		if c.QType == "CNAME" {
 			for _, v := range c.Rdata {
 				exclude = append(exclude, resolver.Name(v))
@@ -694,12 +698,19 @@ func (s *server) adminPage(w http.ResponseWriter, r *http.Request) {
 		s.storeFail(w, r, err)
 		return
 	}
+	prefixes, err := s.pg.CDNPrefixes(r.Context())
+	if err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
 	audit, err := s.pg.AuditLog(r.Context(), 200)
 	if err != nil {
 		s.storeFail(w, r, err)
 		return
 	}
-	s.render(w, r, "admin", http.StatusOK, map[string]any{"Resolvers": resolvers, "NSClasses": classes, "Audit": audit})
+	s.render(w, r, "admin", http.StatusOK, map[string]any{
+		"Resolvers": resolvers, "NSClasses": classes, "CDNPrefixes": prefixes, "Audit": audit,
+	})
 }
 
 func (s *server) createResolver(w http.ResponseWriter, r *http.Request) {
@@ -781,4 +792,48 @@ func (s *server) deleteNSClass(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "nsclass.delete", c.Kind+":"+c.Pattern)
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *server) createCDNPrefix(w http.ResponseWriter, r *http.Request) {
+	prefix, err := cdn.ParsePrefix(r.PostFormValue("prefix"))
+	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	provider := strings.TrimSpace(r.PostFormValue("provider"))
+	if provider == "" {
+		s.fail(w, r, http.StatusBadRequest, "Provider is required.", nil)
+		return
+	}
+	p, err := s.pg.CreateCDNPrefix(r.Context(), prefix, provider, "manual")
+	if err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
+	s.audit(r, "cdnprefix.create", p.Provider+":"+p.Prefix.String())
+	s.refreshCDN(r)
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (s *server) deleteCDNPrefix(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := s.pg.DeleteCDNPrefix(r.Context(), id)
+	if err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
+	s.audit(r, "cdnprefix.delete", p.Provider+":"+p.Prefix.String())
+	s.refreshCDN(r)
+	w.WriteHeader(http.StatusOK)
+}
+
+// refreshCDN applies an admin change at once rather than at the next reload.
+func (s *server) refreshCDN(r *http.Request) {
+	if err := s.loadCDN(r.Context()); err != nil {
+		s.log.Warn("reload cdn prefixes", "err", err)
+	}
 }
