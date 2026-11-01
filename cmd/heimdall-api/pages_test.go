@@ -314,9 +314,46 @@ func TestRenderDomainZone(t *testing.T) {
 	if strings.Contains(body, `class="badge"`) {
 		t.Error("badge in the zone block")
 	}
+	if strings.Contains(body, "Same NS set") {
+		t.Error("NS set line shown without ns pairs")
+	}
 	data["Zone"] = (*zoneView)(nil)
 	if body := renderPage(t, "domain", data); strings.Contains(body, "<h2>Zone</h2>") {
 		t.Error("zone block shown for an apex")
+	}
+}
+
+func TestRenderNSPairs(t *testing.T) {
+	overlap := ch.Period{First: t0.Add(time.Hour), Last: t0.Add(2 * time.Hour)}
+	pairs := &nsPairsView{Zone: "syamcloud.com", NS: []string{"a.ns.example", "b.ns.example"}, Matches: []ch.NSPairPivot{
+		{Domain: "other.example", Overlap: &overlap},
+		{Domain: "later.example"},
+	}}
+	data := map[string]any{
+		"FQDN": "proxy.syamcloud.com", "Domain": (*pg.Domain)(nil), "Sharing": map[string]uint64{},
+		"Zone":    &zoneView{Name: "syamcloud.com"},
+		"NSPairs": pairs,
+	}
+	body := renderPage(t, "domain", data)
+	if want := `Same NS set: <a href="/domains/other.example">other.example</a> (2026-03-01 13:00:00 → 2026-03-01 14:00:00) · ` +
+		`<a href="/domains/later.example">later.example</a> (no overlap)</p>`; !strings.Contains(body, want) {
+		t.Errorf("domain page lacks %q", want)
+	}
+
+	pairs.Matches = nil
+	if body := renderPage(t, "domain", data); !strings.Contains(body, "Same NS set: no other zone</p>") {
+		t.Error("empty match list not reported")
+	}
+
+	data["Zone"] = (*zoneView)(nil)
+	body = renderPage(t, "domain", data)
+	if !strings.Contains(body, "<h2>Zone</h2>") || !strings.Contains(body, "Same NS set: no other zone") || strings.Contains(body, "Enclosing zone") {
+		t.Error("apex: NS set line missing, or enclosing zone shown")
+	}
+
+	data["NSPairs"] = (*nsPairsView)(nil)
+	if body := renderPage(t, "domain", data); strings.Contains(body, "Same NS set") || strings.Contains(body, "<h2>Zone</h2>") {
+		t.Error("NS set line or zone block shown with null ns pairs")
 	}
 }
 

@@ -87,8 +87,47 @@ func TestSplitCDN(t *testing.T) {
 	if len(kept) != 1 || encode(t, excluded) != "[]" {
 		t.Errorf("no CDN value: kept %v, excluded %s", kept, encode(t, excluded))
 	}
-	if got := encode(t, pivotsJSON{Pivots: []pivotJSON{}, ExcludedCDN: excluded}); got != `{"pivots":[],"excluded_cdn":[]}` {
+	if got := encode(t, pivotsJSON{Pivots: []pivotJSON{}, ExcludedCDN: excluded}); got != `{"pivots":[],"excluded_cdn":[],"ns_pairs":null}` {
 		t.Errorf("empty pivots = %s", got)
+	}
+}
+
+func TestNSPairsJSON(t *testing.T) {
+	overlap := ch.Period{First: t0.Add(time.Hour), Last: t0.Add(2 * time.Hour)}
+	v := &nsPairsView{
+		Zone: "a.example", NS: []string{"ns1.p.example", "ns2.p.example"},
+		Matches: []ch.NSPairPivot{
+			{Domain: "same.example", Target: ch.Period{First: t0, Last: t0.Add(2 * time.Hour)}, Other: ch.Period{First: t0.Add(time.Hour), Last: t0.Add(3 * time.Hour)}, Overlap: &overlap},
+			{Domain: "later.example", Target: ch.Period{First: t0, Last: t0.Add(2 * time.Hour)}, Other: ch.Period{First: t0.Add(5 * time.Hour), Last: t0.Add(6 * time.Hour)}},
+		},
+	}
+	want := `{"pivots":[],"excluded_cdn":[],"ns_pairs":{"zone":"a.example","ns":["ns1.p.example","ns2.p.example"],"matches":[` +
+		`{"domain":"same.example","other":{"first":"2026-03-01T13:00:00Z","last":"2026-03-01T15:00:00Z"},"target":{"first":"2026-03-01T12:00:00Z","last":"2026-03-01T14:00:00Z"},"overlap":{"first":"2026-03-01T13:00:00Z","last":"2026-03-01T14:00:00Z"}},` +
+		`{"domain":"later.example","other":{"first":"2026-03-01T17:00:00Z","last":"2026-03-01T18:00:00Z"},"target":{"first":"2026-03-01T12:00:00Z","last":"2026-03-01T14:00:00Z"},"overlap":null}]}}`
+	if got := encode(t, pivotsJSON{Pivots: []pivotJSON{}, ExcludedCDN: []excludedCDNJSON{}, NSPairs: toNSPairsJSON(v)}); got != want {
+		t.Errorf("ns pairs =\n%s\nwant\n%s", got, want)
+	}
+	if got := encode(t, toNSPairsJSON(&nsPairsView{Zone: "a.example", NS: []string{"ns1.p.example", "ns2.p.example"}})); got != `{"zone":"a.example","ns":["ns1.p.example","ns2.p.example"],"matches":[]}` {
+		t.Errorf("no match = %s", got)
+	}
+	if got := encode(t, toNSPairsJSON(nil)); got != "null" {
+		t.Errorf("no zone = %s, want null", got)
+	}
+}
+
+func TestPairable(t *testing.T) {
+	for _, tt := range []struct {
+		z    *ch.NSSet
+		want bool
+	}{
+		{nil, false},
+		{&ch.NSSet{Zone: "a.example"}, false},
+		{&ch.NSSet{Zone: "a.example", NS: []string{"ns1.p.example"}}, false},
+		{&ch.NSSet{Zone: "a.example", NS: []string{"ns1.p.example", "ns2.p.example"}}, true},
+	} {
+		if got := pairable(tt.z); got != tt.want {
+			t.Errorf("pairable(%+v) = %v, want %v", tt.z, got, tt.want)
+		}
 	}
 }
 
