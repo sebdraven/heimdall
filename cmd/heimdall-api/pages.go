@@ -244,10 +244,44 @@ func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, "zone", err)
 		return
 	}
+	pairs, err := s.loadNSPairs(r.Context(), fqdn, nsPairsPage)
+	if err != nil {
+		s.fail(w, r, http.StatusInternalServerError, "ns pairs", err)
+		return
+	}
 	s.render(w, r, "domain", http.StatusOK, map[string]any{
 		"FQDN": fqdn, "Domain": dd.Domain, "Current": dd.Current, "Changes": dd.Changes, "PDNS": dd.PDNS, "Sharing": sharing,
-		"Zone": zone,
+		"Zone": zone, "NSPairs": pairs,
 	})
+}
+
+const nsPairsPage = 100
+
+// nsPairsView is the zone of a name, its NS set and the other names holding
+// exactly that set.
+type nsPairsView struct {
+	Zone    string
+	NS      []string
+	Matches []ch.NSPairPivot
+}
+
+// pairable reports whether z is a zone whose NS set is worth pivoting on.
+func pairable(z *ch.NSSet) bool { return z != nil && len(z.NS) >= ch.MinNSSet }
+
+// loadNSPairs returns nil when no zone is found or its NS set is too small.
+func (s *server) loadNSPairs(ctx context.Context, fqdn string, limit int) (*nsPairsView, error) {
+	z, err := s.ch.NSSet(ctx, fqdn)
+	if err != nil {
+		return nil, fmt.Errorf("ns set: %w", err)
+	}
+	if !pairable(z) {
+		return nil, nil
+	}
+	matches, err := s.ch.NSPairPivots(ctx, z.Zone, z.NS, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ns pair pivots: %w", err)
+	}
+	return &nsPairsView{Zone: z.Zone, NS: z.NS, Matches: matches}, nil
 }
 
 // mergeChanges interleaves two newest-first change lists, keeping the limit

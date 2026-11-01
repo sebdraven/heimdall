@@ -41,7 +41,7 @@ to `cdn.y` yields two records, `(www.x, CNAME, cdn.y)` and `(cdn.y, A, <ip>)`.
 
 Going from a watched name to its IPs therefore follows the CNAME chain: query
 `/api/pdns/query/www.x`, then the CNAME targets. Likewise `/api/pivots/{fqdn}`
-only sees the A/AAAA/NS owned by `fqdn` itself, and may return CNAME targets
+only sees the A/AAAA owned by `fqdn` itself, and may return CNAME targets
 that are not in the watchlist.
 
 ### Authority section
@@ -166,7 +166,7 @@ GET    /api/campaigns
 POST   /api/campaigns               {"name", "family", "description"}
 GET    /api/campaigns/{id}/domains  same fields as GET /api/domains, 404 if unknown
 GET    /api/events?since=&until=&kind=&campaign=&domain=&limit=
-GET    /api/pivots/{fqdn}[?limit=]  domains sharing an A/AAAA/NS value, with overlap, see below
+GET    /api/pivots/{fqdn}[?limit=]  names sharing an A/AAAA value or the whole NS set, with overlap, see below
 GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
 GET    /healthz                     no auth
 ```
@@ -185,11 +185,27 @@ the name and those of its zone `zone:{fqdn}`, as the page does. Each carries
 `"scope": "name"` or `"scope": "zone"`. A `current` entry whose `rdata` holds
 CDN addresses has `"cdn": {"<ip>": "<provider>"}`, absent otherwise.
 
-`/api/pivots/{fqdn}` returns `{"pivots", "excluded_cdn"}`. `pivots` are
-`{"domain", "rrtype", "rdata", "target", "other", "overlap"}`, `limit`
-defaulting to 1000, at most 10000. The A/AAAA values of `fqdn` that are CDN
-addresses are not pivoted on and are listed in `excluded_cdn` as
-`{"value", "provider"}`.
+`/api/pivots/{fqdn}` returns `{"pivots", "excluded_cdn", "ns_pairs"}`, each
+list holding at most `limit` entries (default 1000, at most 10000).
+
+- A and AAAA pivot by value: `pivots` are the other names that held one of
+  the A/AAAA values of `fqdn`, as `{"domain", "rrtype", "rdata", "target",
+  "other", "overlap"}`. The values that are CDN addresses are not pivoted on
+  and are listed in `excluded_cdn` as `{"value", "provider"}`.
+- NS pivot by whole set. A single nameserver says nothing
+  (`brianna.ns.cloudflare.com` serves millions of zones), but Cloudflare and
+  others give each account its own pair, so two zones with exactly the same
+  NS set likely have one operator. The zone is `fqdn` if it owns NS records
+  seen in the last 7 days, else its nearest ancestor below the TLD that does.
+  `ns_pairs` is `{"zone", "ns", "matches"}`: `ns` is that zone's current set,
+  sorted, and `matches` are the other names whose current set is strictly
+  equal to it (a subset or superset does not match), as `{"domain", "other",
+  "target", "overlap"}`, `target` covering the zone's set. CDN prefixes do
+  not apply: an identical Cloudflare pair is the signal. `ns_pairs` is `null`
+  when no zone is found or its set has fewer than 2 nameservers.
+
+The Zone block of `/domains/{fqdn}` lists the same matches under "Same NS
+set", also for a name that is itself a zone apex.
 
 ## Search
 

@@ -191,9 +191,39 @@ type excludedCDNJSON struct {
 	Provider string `json:"provider"`
 }
 
+type nsMatchJSON struct {
+	Domain  string      `json:"domain"`
+	Other   periodJSON  `json:"other"`
+	Target  periodJSON  `json:"target"`
+	Overlap *periodJSON `json:"overlap"`
+}
+
+type nsPairsJSON struct {
+	Zone    string        `json:"zone"`
+	NS      []string      `json:"ns"`
+	Matches []nsMatchJSON `json:"matches"`
+}
+
 type pivotsJSON struct {
 	Pivots      []pivotJSON       `json:"pivots"`
 	ExcludedCDN []excludedCDNJSON `json:"excluded_cdn"`
+	NSPairs     *nsPairsJSON      `json:"ns_pairs"`
+}
+
+func toNSPairsJSON(v *nsPairsView) *nsPairsJSON {
+	if v == nil {
+		return nil
+	}
+	out := &nsPairsJSON{Zone: v.Zone, NS: v.NS, Matches: make([]nsMatchJSON, 0, len(v.Matches))}
+	for _, m := range v.Matches {
+		mj := nsMatchJSON{Domain: m.Domain, Other: periodJSON(m.Other), Target: periodJSON(m.Target)}
+		if m.Overlap != nil {
+			o := periodJSON(*m.Overlap)
+			mj.Overlap = &o
+		}
+		out.Matches = append(out.Matches, mj)
+	}
+	return out
 }
 
 // splitCDN sets aside the A and AAAA values that are CDN addresses, which
@@ -623,14 +653,21 @@ func (s *server) apiPivots(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	limit := intParam(r, "limit", 1000, 10000)
 	kept, excluded := splitCDN(values, s.cdn)
-	pivots, err := s.ch.Pivots(r.Context(), fqdn, kept, intParam(r, "limit", 1000, 10000))
+	pivots, err := s.ch.Pivots(r.Context(), fqdn, kept, limit)
 	if err != nil {
 		s.log.Error("pivots", "err", err)
 		apiError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	out := pivotsJSON{Pivots: make([]pivotJSON, 0, len(pivots)), ExcludedCDN: excluded}
+	pairs, err := s.loadNSPairs(r.Context(), fqdn, limit)
+	if err != nil {
+		s.log.Error("ns pairs", "err", err)
+		apiError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	out := pivotsJSON{Pivots: make([]pivotJSON, 0, len(pivots)), ExcludedCDN: excluded, NSPairs: toNSPairsJSON(pairs)}
 	for _, p := range pivots {
 		pj := pivotJSON{
 			Domain: p.Domain, RRType: p.RRType, RData: p.RData,

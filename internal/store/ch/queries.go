@@ -2,6 +2,7 @@ package ch
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -296,21 +297,22 @@ type Pivot struct {
 	Overlap *Period
 }
 
-// PivotValue is an A, AAAA or NS value owned by a name, with the period it
-// was seen.
+// PivotValue is an A or AAAA value owned by a name, with the period it was
+// seen.
 type PivotValue struct {
 	RRType string
 	RData  string
 	Period Period
 }
 
-// PivotValues returns the A, AAAA and NS values owned by fqdn.
+// PivotValues returns the A and AAAA values owned by fqdn. NS values pivot by
+// whole set, see NSPairPivots.
 // pdns is keyed by RR owner, so a CNAME'd name has no A/AAAA of its own.
 func (s *Store) PivotValues(ctx context.Context, fqdn string) ([]PivotValue, error) {
 	rows, err := s.conn.Query(ctx, `
 		SELECT rrtype, rdata, min(first_seen), max(last_seen)
 		FROM pdns
-		WHERE rrname = ? AND rrtype IN ('A', 'AAAA', 'NS')
+		WHERE rrname = ? AND rrtype IN ('A', 'AAAA')
 		GROUP BY rrtype, rdata
 		ORDER BY rrtype, rdata`, fqdn)
 	if err != nil {
@@ -342,11 +344,11 @@ func (s *Store) Pivots(ctx context.Context, fqdn string, values []PivotValue, li
 		args = append(args, v.RData)
 	}
 	args = append(args, limit)
-	// rdata alone selects the rows: an A, AAAA and NS value never share a spelling.
+	// rdata alone selects the rows: an A and an AAAA value never share a spelling.
 	rows, err := s.conn.Query(ctx, `
 		SELECT rrname, rrtype, rdata, min(first_seen), max(last_seen)
 		FROM pdns
-		WHERE rrtype IN ('A', 'AAAA', 'NS') AND rrname != ? AND rdata IN (`+placeholders(len(values))+`)
+		WHERE rrtype IN ('A', 'AAAA') AND rrname != ? AND rdata IN (`+placeholders(len(values))+`)
 		GROUP BY rrname, rrtype, rdata
 		ORDER BY rrname, rrtype, rdata
 		LIMIT ?`, args...)
@@ -371,6 +373,174 @@ func (s *Store) Pivots(ctx context.Context, fqdn string, values []PivotValue, li
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// MinNSSet is the smallest NS set worth pivoting on: a single nameserver is
+// shared by every zone of its provider.
+const MinNSSet = 2
+
+// nsCurrent keeps the NS records seen in the last 7 days.
+const nsCurrent = `max(last_seen) >= now64(3) - INTERVAL 7 DAY`
+
+// NSSet is the current NS set of a zone, sorted, and the period it covers.
+type NSSet struct {
+	Zone   string
+	NS     []string
+	Period Period
+}
+
+type nsRecord struct {
+	rrname, rdata string
+	period        Period
+}
+
+// NSSet returns the current NS set of fqdn or, if it owns none, of its
+// nearest ancestor below the TLD that does. It returns nil if none does.
+func (s *Store) NSSet(ctx context.Context, fqdn string) (*NSSet, error) {
+	names := zoneCandidates(fqdn)
+	if len(names) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(names))
+	for _, n := range names {
+		args = append(args, n)
+	}
+	rows, err := s.conn.Query(ctx, `
+		SELECT rrname, rdata, min(first_seen), max(last_seen)
+		FROM pdns
+		WHERE rrtype = 'NS' AND rrname IN (`+placeholders(len(names))+`)
+		GROUP BY rrname, rdata
+		HAVING `+nsCurrent, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var recs []nsRecord
+	for rows.Next() {
+		var r nsRecord
+		if err := rows.Scan(&r.rrname, &r.rdata, &r.period.First, &r.period.Last); err != nil {
+			return nil, err
+		}
+		recs = append(recs, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return pickZone(names, recs), nil
+}
+
+// zoneCandidates lists fqdn and its ancestors, nearest first, down to the
+// last one that still has a dot.
+func zoneCandidates(fqdn string) []string {
+	var out []string
+	for name := fqdn; strings.Contains(name, "."); _, name, _ = strings.Cut(name, ".") {
+		out = append(out, name)
+	}
+	return out
+}
+
+// pickZone returns the first of names owning NS records, with its sorted set.
+func pickZone(names []string, recs []nsRecord) *NSSet {
+	for _, name := range names {
+		var z *NSSet
+		for _, r := range recs {
+			if r.rrname != name {
+				continue
+			}
+			if z == nil {
+				z = &NSSet{Zone: name, Period: r.period}
+			}
+			z.NS = append(z.NS, r.rdata)
+			z.Period = Period{First: earlier(z.Period.First, r.period.First), Last: later(z.Period.Last, r.period.Last)}
+		}
+		if z != nil {
+			slices.Sort(z.NS)
+			z.NS = slices.Compact(z.NS)
+			return z
+		}
+	}
+	return nil
+}
+
+// NSPairPivot is another name whose current NS set equals the zone's.
+type NSPairPivot struct {
+	Domain  string
+	Target  Period
+	Other   Period
+	Overlap *Period
+}
+
+// NSPairPivots returns the other owner names whose current NS set is exactly
+// set, the NS set of zone. It returns nil for a set below MinNSSet.
+func (s *Store) NSPairPivots(ctx context.Context, zone string, set []string, limit int) ([]NSPairPivot, error) {
+	set = slices.Compact(slices.Sorted(slices.Values(set)))
+	if len(set) < MinNSSet {
+		return nil, nil
+	}
+	args := make([]any, 0, len(set)+1)
+	for _, ns := range set {
+		args = append(args, ns)
+	}
+	args = append(args, len(set))
+	// The subquery keeps the names holding every NS of set at some point; the
+	// equality of current sets is checked in Go.
+	rows, err := s.conn.Query(ctx, `
+		SELECT rrname, groupArray(rdata) AS ns, min(f) AS fs, max(l) AS ls
+		FROM (
+			SELECT rrname, rdata, min(first_seen) AS f, max(last_seen) AS l
+			FROM pdns
+			WHERE rrtype = 'NS' AND rrname IN (
+				SELECT rrname FROM pdns
+				WHERE rrtype = 'NS' AND rdata IN (`+placeholders(len(set))+`)
+				GROUP BY rrname
+				HAVING uniqExact(rdata) = ?)
+			GROUP BY rrname, rdata
+			HAVING `+nsCurrent+`)
+		GROUP BY rrname
+		ORDER BY rrname`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sets []NSSet
+	for rows.Next() {
+		var z NSSet
+		if err := rows.Scan(&z.Zone, &z.NS, &z.Period.First, &z.Period.Last); err != nil {
+			return nil, err
+		}
+		sets = append(sets, z)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return matchNSSet(zone, set, sets, limit), nil
+}
+
+// matchNSSet keeps the sets other than zone's that equal set, which must be
+// sorted. The target period is that of zone's own row.
+func matchNSSet(zone string, set []string, sets []NSSet, limit int) []NSPairPivot {
+	var target Period
+	for _, z := range sets {
+		if z.Zone == zone {
+			target = z.Period
+		}
+	}
+	var out []NSPairPivot
+	for _, z := range sets {
+		if z.Zone == zone || !slices.Equal(slices.Sorted(slices.Values(z.NS)), set) {
+			continue
+		}
+		if limit > 0 && len(out) == limit {
+			break
+		}
+		p := NSPairPivot{Domain: z.Zone, Target: target, Other: z.Period}
+		first, last := later(p.Target.First, p.Other.First), earlier(p.Target.Last, p.Other.Last)
+		if !first.After(last) {
+			p.Overlap = &Period{First: first, Last: last}
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func placeholders(n int) string { return strings.TrimSuffix(strings.Repeat("?, ", n), ", ") }

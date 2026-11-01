@@ -218,6 +218,65 @@ func TestSearchNamesAndValues(t *testing.T) {
 	}
 }
 
+func TestNSPairPivots(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	observe := func(ts time.Time, name, typ string, values ...string) resolver.Observation {
+		o := resolver.Observation{TS: ts, Domain: name, QType: typ, Resolver: "9.9.9.9:53", Rcode: "NOERROR", Rdata: values}
+		for _, v := range values {
+			o.Answers = append(o.Answers, resolver.Answer{Name: name, Type: typ, Value: v})
+		}
+		return o
+	}
+	pair := []string{"ns1.p.example", "ns2.p.example"}
+	if err := s.InsertObservations(ctx, []resolver.Observation{
+		observe(now.Add(-time.Hour), "a.example", "NS", pair...),
+		observe(now.Add(-time.Hour), "a.example", "A", "192.0.2.1"),
+		observe(now.Add(-2*time.Hour), "same.example", "NS", pair[1], pair[0]),
+		observe(now.Add(-time.Hour), "superset.example", "NS", append([]string{"ns3.p.example"}, pair...)...),
+		observe(now.Add(-time.Hour), "subset.example", "NS", pair[0]),
+		observe(now.Add(-10*24*time.Hour), "stale.example", "NS", pair...),
+		observe(now.Add(-time.Hour), "shared-ip.example", "A", "192.0.2.1"),
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	z, err := s.NSSet(ctx, "x.www.a.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if z == nil || z.Zone != "a.example" || !slices.Equal(z.NS, pair) {
+		t.Fatalf("NSSet(x.www.a.example) = %+v, want zone a.example with %v", z, pair)
+	}
+	matches, err := s.NSPairPivots(ctx, z.Zone, z.NS, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Domain != "same.example" || matches[0].Overlap == nil {
+		t.Fatalf("NS pair pivots = %+v, want same.example only, overlapping", matches)
+	}
+
+	values, err := s.PivotValues(ctx, "a.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].RRType != "A" {
+		t.Fatalf("pivot values = %+v, want the A value only", values)
+	}
+	pivots, err := s.Pivots(ctx, "a.example", values, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pivots) != 1 || pivots[0].Domain != "shared-ip.example" {
+		t.Fatalf("pivots = %+v, want shared-ip.example only, no NS pivot", pivots)
+	}
+
+	if z, err := s.NSSet(ctx, "nothing.example"); err != nil || z != nil {
+		t.Errorf("NSSet(nothing.example) = %+v, %v; want nil", z, err)
+	}
+}
+
 func TestStatesRoundTrip(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
