@@ -335,19 +335,19 @@ func TestRenderNSPairs(t *testing.T) {
 		"NSPairs": pairs,
 	}
 	body := renderPage(t, "domain", data)
-	if want := `Same NS set: <a href="/domains/other.example">other.example</a> (2026-03-01 13:00:00 → 2026-03-01 14:00:00) · ` +
+	if want := `Same NS set (a.ns.example, b.ns.example): <a href="/domains/other.example">other.example</a> (2026-03-01 13:00:00 → 2026-03-01 14:00:00) · ` +
 		`<a href="/domains/later.example">later.example</a> (no overlap)</p>`; !strings.Contains(body, want) {
 		t.Errorf("domain page lacks %q", want)
 	}
 
 	pairs.Matches = nil
-	if body := renderPage(t, "domain", data); !strings.Contains(body, "Same NS set: no other zone</p>") {
+	if body := renderPage(t, "domain", data); !strings.Contains(body, "Same NS set (a.ns.example, b.ns.example): no other zone</p>") {
 		t.Error("empty match list not reported")
 	}
 
 	data["Zone"] = (*zoneView)(nil)
 	body = renderPage(t, "domain", data)
-	if !strings.Contains(body, "<h2>Zone</h2>") || !strings.Contains(body, "Same NS set: no other zone") || strings.Contains(body, "Enclosing zone") {
+	if !strings.Contains(body, "<h2>Zone</h2>") || !strings.Contains(body, "Same NS set (a.ns.example, b.ns.example): no other zone") || strings.Contains(body, "Enclosing zone") {
 		t.Error("apex: NS set line missing, or enclosing zone shown")
 	}
 

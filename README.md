@@ -167,6 +167,8 @@ POST   /api/campaigns               {"name", "family", "description"}
 GET    /api/campaigns/{id}/domains  same fields as GET /api/domains, 404 if unknown
 GET    /api/events?since=&until=&kind=&campaign=&domain=&limit=
 GET    /api/pivots/{fqdn}[?limit=]  names sharing an A/AAAA value or the whole NS set, with overlap, see below
+GET    /api/graph/domain/{fqdn}[?depth=]   graph around a name, see Graph view
+GET    /api/graph/campaign/{id}     graph of a campaign, 404 if unknown, see Graph view
 GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
 GET    /healthz                     no auth
 ```
@@ -205,7 +207,45 @@ list holding at most `limit` entries (default 1000, at most 10000).
   when no zone is found or its set has fewer than 2 nameservers.
 
 The Zone block of `/domains/{fqdn}` lists the same matches under "Same NS
-set", also for a name that is itself a zone apex.
+set (ns1, ns2)", the set itself first, also for a name that is itself a zone
+apex.
+
+## Graph view
+
+`/graph/domain/{fqdn}` and `/graph/campaign/{id}`, linked as "Graph" from the
+domain and campaign pages, draw the infrastructure with Pivotick. Clicking a
+node opens its page. The browser reads the graph from
+`/graph/domain/{fqdn}/data` and `/graph/campaign/{id}/data`, which return the
+same JSON as `/api/graph/...` under the session cookie, since `/api` only
+takes Bearer tokens.
+
+`/api/graph/domain/{fqdn}?depth=` returns `{"nodes", "edges", "truncated",
+"excluded_cdn"}`. `depth` is 1 by default, at most 2 (a larger value reads as
+2).
+
+- Depth 1: the name, its A/AAAA values from passive DNS, the CNAME targets of
+  its current state and the NS set of its zone (as in `/api/pivots`, at least
+  2 nameservers).
+- Depth 2 adds the other names sharing one of those values or that NS set.
+
+`/api/graph/campaign/{id}` holds every domain of the campaign at depth 1,
+plus the names outside the campaign that share a value or an NS set with at
+least two of its domains.
+
+A node is `{"id", "kind", "label", "watched", "campaign", "href"}`:
+
+| kind     | id                  | label         | href              |
+|----------|---------------------|---------------|-------------------|
+| `domain` | `d:<fqdn>`          | the name      | `/domains/<fqdn>` |
+| `ip`     | `ip:<value>`        | the value     | `/rdata/<value>`  |
+| `nsset`  | `ns:<ns1>,<ns2>`    | `ns1, ns2`    | `/domains/<zone>` |
+
+The nameservers of an `nsset` are sorted. `watched` and `campaign` come from
+the watchlist. An edge is `{"from", "to", "kind"}`, `kind` being `A`, `AAAA`,
+`CNAME` or `NS_SET`. Nodes and edges are unique. CDN addresses are left out
+and counted in `excluded_cdn`. A graph stops at 500 nodes, the domains of the
+request first, with `"truncated": true`; it is also set when a pivot query
+reaches its limit of 500 rows.
 
 ## Search
 
@@ -236,10 +276,40 @@ has one boolean per source. For an IP, `names` are the owners that held it
 Roles: `viewer` reads; `analyst` also manages domains and campaigns; `admin`
 also manages resolvers, NS classes and CDN prefixes and reads the audit log.
 
-## Front-end assets
+## Front-end dependencies
 
-`web/static/htmx.min.js` (htmx 2.x) is not vendored by the skeleton: commit it
-so that it is embedded in the binaries. No JavaScript toolchain is used.
+Vendored under `web/static` and embedded in the binaries. No JavaScript
+toolchain is used and nothing is loaded from a CDN.
+
+| Library  | Version | File                                                   | sha256                                                             |
+|----------|---------|--------------------------------------------------------|--------------------------------------------------------------------|
+| htmx     | 2.0.11  | `web/static/htmx.min.js`                               | `d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717` |
+| Pivotick | v3.0.0  | `web/static/vendor/pivotick/pivotick.iife.js`          | `e3472a1ad9dbc047b4e379d657276311fd7726180550133c25b68423b288c59d` |
+| Pivotick | v3.0.0  | `web/static/vendor/pivotick/pivotick.css`              | `402afa28d1525ab64fa1c46638a2cc39a7e4680a1fc724d77dc428d6298e2244` |
+| Pivotick | v3.0.0  | `web/static/vendor/pivotick/workers/simulation.worker.js` | `cda2c24a694de0fe86a8bb80c86e5640eac4c678d4bf5a5dbd547afca7ea2caf` |
+
+The Pivotick files come from the release archive `pivotick-dist.zip`
+(sha256 `78ccefad8485a9fa6a87d3ef109a234aa1c4c3c3300cc56c63a6bede25d18617`).
+Only `/graph/...` pages load Pivotick, through `web/static/graph.js`. The
+IIFE build inlines its simulation worker and starts it from a `blob:` URL,
+which the CSP blocks, so `graph.js` sets `simulation.useWorker: false` and
+the layout runs on the page; `workers/simulation.worker.js` is kept with the
+release but not loaded.
+
+To update one of them:
+
+1. Download the new release: `htmx.min.js` from the `htmx.org` npm package
+   (`dist/htmx.min.js`), `pivotick-dist.zip` from the Pivotick releases
+   (<https://pivotick.github.io/Pivotick/>).
+2. Check the sha256 of the archive or file against the one published with
+   the release (`sha256sum`, or `shasum -a 256` on macOS), then replace the
+   files at the paths above.
+3. Update the version and sha256 in this table.
+4. For Pivotick, check the type definitions of the release for renamed
+   options or callbacks used by `graph.js` (`UI.mode`, `simulation.useWorker`,
+   `render.nodeTypeAccessor`, `render.nodeStyleMap`, `render.defaultNodeStyle`,
+   `callbacks.onNodeClick`), and that the graph pages still work under the
+   CSP of `cmd/heimdall-api/server.go`.
 
 ## Configuration
 

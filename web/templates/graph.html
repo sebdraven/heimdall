@@ -1,0 +1,23 @@
+{{define "title"}}{{.Data.Title}} · Graph · Heimdall{{end}}
+{{define "head"}}
+<link rel="stylesheet" href="/static/vendor/pivotick/pivotick.css">
+<script src="/static/vendor/pivotick/pivotick.iife.js" defer></script>
+<script src="/static/graph.js" defer></script>
+{{end}}
+{{define "content"}}
+<div class="graph-bar">
+  <h1>{{.Data.Title}}</h1>
+  <a href="{{.Data.Back}}">Back</a>
+  {{with .Data.Path}}<span class="meta">Depth {{if eq $.Data.Depth 1}}1 · <a href="{{.}}?depth=2">2</a>{{else}}<a href="{{.}}?depth=1">1</a> · 2{{end}}</span>{{end}}
+  <ul class="legend">
+    <li><span class="swatch swatch-domain-watched"></span>domain watched</li>
+    <li><span class="swatch swatch-domain"></span>domain unwatched</li>
+    <li><span class="swatch swatch-ip"></span>ip</li>
+    <li><span class="swatch swatch-nsset"></span>nsset</li>
+  </ul>
+  <p class="notice" id="graph-cdn" hidden><span id="graph-cdn-count"></span> CDN addresses left out</p>
+  <p class="notice" id="graph-truncated" hidden>truncated at {{.Data.MaxNodes}} nodes</p>
+  <p class="error" id="graph-error" hidden></p>
+</div>
+<div id="graph" class="graph-canvas" data-source="{{.Data.Source}}"></div>
+{{end}}

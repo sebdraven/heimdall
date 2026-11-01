@@ -7,6 +7,10 @@
   --danger: #b3261e;
   --ok: #1f7a3a;
   --code: #eef0f2;
+  --graph-domain-watched: #d1495b;
+  --graph-domain: #8a9199;
+  --graph-ip: #2e86ab;
+  --graph-nsset: #e0a030;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -104,3 +108,16 @@ form.inline .wide { min-width: 20rem; }
 .rcode-NXDOMAIN, .rcode-SERVFAIL, .rcode-TIMEOUT, .rcode-NETERR { color: var(--danger); }
 .added code { color: var(--ok); }
 .removed code { color: var(--danger); text-decoration: line-through; }
+
+.title-link { font-size: .8rem; font-weight: 400; margin-left: .5rem; }
+
+main:has(> .graph-canvas) { max-width: none; padding-bottom: 1rem; }
+.graph-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.25rem; margin-bottom: .6rem; }
+.graph-bar h1, .graph-bar p { margin: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 1rem; margin: 0; padding: 0; list-style: none; color: var(--muted); }
+.swatch { display: inline-block; width: .7rem; height: .7rem; margin-right: .35rem; border-radius: 50%; }
+.swatch-domain-watched { background: var(--graph-domain-watched); }
+.swatch-domain { background: var(--graph-domain); }
+.swatch-ip { background: var(--graph-ip); }
+.swatch-nsset { background: var(--graph-nsset); }
+.graph-canvas { position: relative; height: calc(100vh - 8.5rem); min-height: 24rem; border: 1px solid var(--line); border-radius: 4px; }
