@@ -234,6 +234,7 @@ func TestNSPairPivots(t *testing.T) {
 		observe(now.Add(-time.Hour), "a.example", "NS", pair...),
 		observe(now.Add(-time.Hour), "a.example", "A", "192.0.2.1"),
 		observe(now.Add(-2*time.Hour), "same.example", "NS", pair[1], pair[0]),
+		observe(now.Add(-30*time.Minute), "same.example", "NS", pair...),
 		observe(now.Add(-time.Hour), "superset.example", "NS", append([]string{"ns3.p.example"}, pair...)...),
 		observe(now.Add(-time.Hour), "subset.example", "NS", pair[0]),
 		observe(now.Add(-10*24*time.Hour), "stale.example", "NS", pair...),
