@@ -1,6 +1,6 @@
 {{define "title"}}{{.Data.FQDN}} · Heimdall{{end}}
 {{define "content"}}
-<h1>{{.Data.FQDN}}</h1>
+<h1>{{.Data.FQDN}} <a class="title-link" href="/graph/domain/{{.Data.FQDN}}">Graph</a></h1>
 {{with .Data.Domain}}
 <p class="meta">
   {{if .Campaign}}Campaign <a href="/campaigns/{{.CampaignID}}">{{.Campaign}}</a> ·{{end}}
@@ -48,7 +48,7 @@
 </table>
 {{end}}
 {{with .Data.NSPairs}}
-<p class="meta">Same NS set: {{range $i, $m := .Matches}}{{if $i}} · {{end}}{{domainLink $m.Domain}} {{with $m.Overlap}}({{ts .First}} → {{ts .Last}}){{else}}(no overlap){{end}}{{else}}no other zone{{end}}</p>
+<p class="meta">Same NS set ({{range $i, $ns := .NS}}{{if $i}}, {{end}}{{$ns}}{{end}}): {{range $i, $m := .Matches}}{{if $i}} · {{end}}{{domainLink $m.Domain}} {{with $m.Overlap}}({{ts .First}} → {{ts .Last}}){{else}}(no overlap){{end}}{{else}}no other zone{{end}}</p>
 {{end}}
 {{end}}
 

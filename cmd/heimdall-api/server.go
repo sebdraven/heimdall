@@ -27,7 +27,7 @@ import (
 
 const maxBody = 1 << 20
 
-var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin"}
+var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin", "graph"}
 
 type server struct {
 	cfg   *config.Config
@@ -38,6 +38,7 @@ type server struct {
 	ipLim *auth.Limiter
 	usLim *auth.Limiter
 	cdn   *cdn.Classifier
+	graph graphStores
 	pages map[string]*template.Template
 }
 
@@ -75,6 +76,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		ipLim: auth.NewLimiter(12*time.Second, 10),
 		usLim: auth.NewLimiter(30*time.Second, 5),
 		cdn:   cdns,
+		graph: graphStores{chs, pgs},
 		pages: pages,
 	}, nil
 }
@@ -106,6 +108,10 @@ func (s *server) routes() http.Handler {
 	mux.Handle("DELETE /domains/{fqdn}", page(analyst, s.deleteDomain))
 	mux.Handle("GET /rdata/{value...}", page(viewer, s.rdataPage))
 	mux.Handle("GET /search", page(viewer, s.searchPage))
+	mux.Handle("GET /graph/domain/{fqdn}", page(viewer, s.graphDomainPage))
+	mux.Handle("GET /graph/domain/{fqdn}/data", page(viewer, s.apiGraphDomain))
+	mux.Handle("GET /graph/campaign/{id}", page(viewer, s.graphCampaignPage))
+	mux.Handle("GET /graph/campaign/{id}/data", page(viewer, s.apiGraphCampaign))
 	mux.Handle("GET /events", page(viewer, s.eventsPage))
 	mux.Handle("GET /admin", page(admin, s.adminPage))
 	mux.Handle("POST /admin/resolvers", page(admin, s.createResolver))
@@ -128,6 +134,8 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/campaigns/{id}/domains", api(viewer, s.apiCampaignDomains))
 	mux.Handle("GET /api/events", api(viewer, s.apiEvents))
 	mux.Handle("GET /api/pivots/{fqdn}", api(viewer, s.apiPivots))
+	mux.Handle("GET /api/graph/domain/{fqdn}", api(viewer, s.apiGraphDomain))
+	mux.Handle("GET /api/graph/campaign/{id}", api(viewer, s.apiGraphCampaign))
 	mux.Handle("GET /api/search", api(viewer, s.apiSearch))
 
 	return s.middleware(mux)

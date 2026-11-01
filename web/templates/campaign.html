@@ -1,7 +1,7 @@
 {{define "title"}}{{.Data.Campaign.Name}} · Heimdall{{end}}
 {{define "content"}}
 {{with .Data.Campaign}}
-<h1>{{.Name}}</h1>
+<h1>{{.Name}} <a class="title-link" href="/graph/campaign/{{.ID}}">Graph</a></h1>
 <p class="meta">{{with .Family}}<span class="tag">{{.}}</span>{{end}} {{.Description}}</p>
 {{end}}
 
