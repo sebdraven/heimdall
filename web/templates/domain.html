@@ -21,7 +21,7 @@
       <td>{{.Resolver}}</td>
       <td><span class="rcode rcode-{{.Rcode}}">{{.Rcode}}</span></td>
       <td>{{.TTL}}</td>
-      <td>{{range .Rdata}}<a href="/rdata/{{.}}"><code>{{.}}</code></a>{{with index $.Data.Sharing .}} <span class="badge">{{.}} name{{if gt . 1}}s{{end}}</span>{{end}}<br>{{end}}</td>
+      <td>{{range .Rdata}}<a href="/rdata/{{.}}"><code>{{.}}</code></a>{{with cdn .}} <span class="cdn">CDN {{.}}</span>{{else}}{{with index $.Data.Sharing .}} <span class="badge">{{.}} name{{if gt . 1}}s{{end}}</span>{{end}}{{end}}<br>{{end}}</td>
       <td class="nowrap">{{ts .TS}}</td>
     </tr>
   {{else}}
@@ -57,8 +57,8 @@
       <td>{{.QType}}{{if ne .Domain $.Data.FQDN}} · {{domainLink .Domain}}{{end}}</td>
       <td>{{.Resolver}}</td>
       <td>{{if ne .PrevRcode .NewRcode}}{{.PrevRcode}} → {{end}}{{.NewRcode}}</td>
-      <td class="added">{{range .Added}}<a href="/rdata/{{.}}"><code>{{.}}</code></a><br>{{end}}</td>
-      <td class="removed">{{range .Removed}}<a href="/rdata/{{.}}"><code>{{.}}</code></a><br>{{end}}</td>
+      <td class="added">{{range .Added}}<a href="/rdata/{{.}}"><code>{{.}}</code></a>{{template "cdn_marker" .}}<br>{{end}}</td>
+      <td class="removed">{{range .Removed}}<a href="/rdata/{{.}}"><code>{{.}}</code></a>{{template "cdn_marker" .}}<br>{{end}}</td>
       <td>{{if ne .PrevTTL .NewTTL}}{{.PrevTTL}} → {{end}}{{.NewTTL}}</td>
     </tr>
   {{else}}

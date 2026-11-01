@@ -151,14 +151,13 @@ func (s *Store) RdataSharing(ctx context.Context, values, exclude []string) (map
 	if len(values) == 0 {
 		return out, nil
 	}
-	in := func(n int) string { return strings.TrimSuffix(strings.Repeat("?, ", n), ", ") }
 	args := make([]any, 0, len(values)+len(exclude))
 	for _, v := range values {
 		args = append(args, v)
 	}
-	where := `rdata IN (` + in(len(values)) + `)`
+	where := `rdata IN (` + placeholders(len(values)) + `)`
 	if len(exclude) > 0 {
-		where += ` AND rrname NOT IN (` + in(len(exclude)) + `)`
+		where += ` AND rrname NOT IN (` + placeholders(len(exclude)) + `)`
 		for _, v := range exclude {
 			args = append(args, v)
 		}
@@ -297,46 +296,60 @@ type Pivot struct {
 	Overlap *Period
 }
 
-// Pivots returns the other owner names that shared an A, AAAA or NS value
-// with fqdn, with each side's observation period and their overlap, if any.
+// PivotValue is an A, AAAA or NS value owned by a name, with the period it
+// was seen.
+type PivotValue struct {
+	RRType string
+	RData  string
+	Period Period
+}
+
+// PivotValues returns the A, AAAA and NS values owned by fqdn.
 // pdns is keyed by RR owner, so a CNAME'd name has no A/AAAA of its own.
-func (s *Store) Pivots(ctx context.Context, fqdn string, limit int) ([]Pivot, error) {
-	type rk struct{ rrtype, rdata string }
-	target := map[rk]Period{}
+func (s *Store) PivotValues(ctx context.Context, fqdn string) ([]PivotValue, error) {
 	rows, err := s.conn.Query(ctx, `
 		SELECT rrtype, rdata, min(first_seen), max(last_seen)
 		FROM pdns
 		WHERE rrname = ? AND rrtype IN ('A', 'AAAA', 'NS')
-		GROUP BY rrtype, rdata`, fqdn)
+		GROUP BY rrtype, rdata
+		ORDER BY rrtype, rdata`, fqdn)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
+	var out []PivotValue
 	for rows.Next() {
-		var k rk
-		var p Period
-		if err := rows.Scan(&k.rrtype, &k.rdata, &p.First, &p.Last); err != nil {
-			rows.Close()
+		var v PivotValue
+		if err := rows.Scan(&v.RRType, &v.RData, &v.Period.First, &v.Period.Last); err != nil {
 			return nil, err
 		}
-		target[k] = p
+		out = append(out, v)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(target) == 0 {
+	return out, rows.Err()
+}
+
+// Pivots returns the other owner names that held one of values, with each
+// side's observation period and their overlap, if any.
+func (s *Store) Pivots(ctx context.Context, fqdn string, values []PivotValue, limit int) ([]Pivot, error) {
+	if len(values) == 0 {
 		return nil, nil
 	}
-
-	rows, err = s.conn.Query(ctx, `
+	type rk struct{ rrtype, rdata string }
+	target := make(map[rk]Period, len(values))
+	args := []any{fqdn}
+	for _, v := range values {
+		target[rk{v.RRType, v.RData}] = v.Period
+		args = append(args, v.RData)
+	}
+	args = append(args, limit)
+	// rdata alone selects the rows: an A, AAAA and NS value never share a spelling.
+	rows, err := s.conn.Query(ctx, `
 		SELECT rrname, rrtype, rdata, min(first_seen), max(last_seen)
 		FROM pdns
-		WHERE rrtype IN ('A', 'AAAA', 'NS') AND rrname != ?
-		  AND (rrtype, rdata) IN (
-		      SELECT rrtype, rdata FROM pdns WHERE rrname = ? AND rrtype IN ('A', 'AAAA', 'NS'))
+		WHERE rrtype IN ('A', 'AAAA', 'NS') AND rrname != ? AND rdata IN (`+placeholders(len(values))+`)
 		GROUP BY rrname, rrtype, rdata
 		ORDER BY rrname, rrtype, rdata
-		LIMIT ?`, fqdn, fqdn, limit)
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +360,10 @@ func (s *Store) Pivots(ctx context.Context, fqdn string, limit int) ([]Pivot, er
 		if err := rows.Scan(&p.Domain, &p.RRType, &p.RData, &p.Other.First, &p.Other.Last); err != nil {
 			return nil, err
 		}
-		p.Target = target[rk{p.RRType, p.RData}]
+		var ok bool
+		if p.Target, ok = target[rk{p.RRType, p.RData}]; !ok {
+			continue
+		}
 		first, last := later(p.Target.First, p.Other.First), earlier(p.Target.Last, p.Other.Last)
 		if !first.After(last) {
 			p.Overlap = &Period{First: first, Last: last}
@@ -356,6 +372,8 @@ func (s *Store) Pivots(ctx context.Context, fqdn string, limit int) ([]Pivot, er
 	}
 	return out, rows.Err()
 }
+
+func placeholders(n int) string { return strings.TrimSuffix(strings.Repeat("?, ", n), ", ") }
 
 func later(a, b time.Time) time.Time {
 	if a.After(b) {

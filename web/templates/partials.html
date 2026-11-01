@@ -1,5 +1,7 @@
 {{define "csrf"}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
 
+{{define "cdn_marker"}}{{with cdn .}} <span class="cdn">CDN {{.}}</span>{{end}}{{end}}
+
 {{define "events_table"}}
 <table>
   <thead>

@@ -1,0 +1,34 @@
+<!--
+  Merged over the image's config.xml (clickhouse-server 26.8).
+  Only logs enabled by default are listed: a section added here for a log
+  that is disabled (session_log, zookeeper_log) would enable it.
+  Not listed: opentelemetry_span_log (defines <engine>, which excludes <ttl>),
+  asynchronous_insert_log (default TTL of 3 days kept) and
+  instrumentation_trace_log (event_date column unconfirmed).
+  A changed TTL makes ClickHouse rename the existing table to <name>_N and
+  create a new one: see README, "ClickHouse system logs".
+-->
+<clickhouse>
+    <max_server_memory_usage_to_ram_ratio>0.5</max_server_memory_usage_to_ram_ratio>
+
+    <query_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_log>
+    <query_thread_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_thread_log>
+    <query_views_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_views_log>
+    <query_metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_metric_log>
+    <part_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></part_log>
+    <trace_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></trace_log>
+    <text_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></text_log>
+    <metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></metric_log>
+    <asynchronous_metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></asynchronous_metric_log>
+    <error_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></error_log>
+    <processors_profile_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></processors_profile_log>
+    <crash_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></crash_log>
+    <background_schedule_pool_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></background_schedule_pool_log>
+    <backup_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></backup_log>
+    <s3queue_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></s3queue_log>
+    <blob_storage_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></blob_storage_log>
+    <iceberg_metadata_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></iceberg_metadata_log>
+    <delta_lake_metadata_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></delta_lake_metadata_log>
+    <aggregated_zookeeper_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></aggregated_zookeeper_log>
+    <zookeeper_connection_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></zookeeper_connection_log>
+</clickhouse>

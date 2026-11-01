@@ -62,6 +62,33 @@
   <button type="submit">Add NS class</button>
 </form>
 
+<h2>CDN prefixes</h2>
+<p class="meta">Addresses in these prefixes are marked CDN and left out of sharing counts and pivots.</p>
+<table>
+  <thead><tr><th>Prefix</th><th>Provider</th><th>Source</th><th>Added (UTC)</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.CDNPrefixes}}
+    <tr>
+      <td><code>{{.Prefix}}</code></td>
+      <td>{{.Provider}}</td>
+      <td>{{.Source}}</td>
+      <td class="nowrap">{{ts .CreatedAt}}</td>
+      <td class="actions">
+        <button class="danger" hx-delete="/admin/cdnprefixes/{{.ID}}" hx-confirm="Delete {{.Prefix}}?" hx-target="closest tr" hx-swap="outerHTML">Delete</button>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No CDN prefixes.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<form class="inline" method="post" action="/admin/cdnprefixes">
+  {{template "csrf" .}}
+  <input name="prefix" placeholder="104.16.0.0/13" required>
+  <input name="provider" placeholder="Provider" required>
+  <button type="submit">Add CDN prefix</button>
+</form>
+
 <h2>Audit log</h2>
 <table>
   <thead><tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Target</th></tr></thead>

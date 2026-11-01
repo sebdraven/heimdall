@@ -54,7 +54,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if err := srv.loadCDN(ctx); err != nil {
+		return err
+	}
 	go srv.housekeeping(ctx)
+	go srv.reloadCDN(ctx)
 
 	hs := &http.Server{
 		Addr:              cfg.Listen,

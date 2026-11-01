@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/sebdraven/heimdall/internal/auth"
+	"github.com/sebdraven/heimdall/internal/cdn"
 	"github.com/sebdraven/heimdall/internal/config"
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/pg"
@@ -38,6 +40,10 @@ const usage = `usage: heimdall-cli <command> <action> [flags]
   domain import --file PATH --campaign NAME [--interval SECONDS]
   resolver add --address HOST:PORT [--label LABEL] [--qps N]
   resolver list
+  cdn add --prefix CIDR --provider NAME
+  cdn list
+  cdn rm --id ID
+  cdn import --file PATH --provider NAME
 
 Connects to Postgres using HEIMDALL_PG_DSN.
 `
@@ -59,6 +65,10 @@ var commands = map[string]command{
 	"domain import": domainImport,
 	"resolver add":  resolverAdd,
 	"resolver list": resolverList,
+	"cdn add":       cdnAdd,
+	"cdn list":      cdnList,
+	"cdn rm":        cdnRm,
+	"cdn import":    cdnImport,
 }
 
 func main() {
@@ -420,6 +430,127 @@ func resolverList(ctx context.Context, s *pg.Store, fs *flag.FlagSet, args []str
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%t\n", r.ID, r.Address, r.Label, r.QPS, r.Enabled)
 	}
 	return tw.Flush()
+}
+
+func cdnAdd(ctx context.Context, s *pg.Store, fs *flag.FlagSet, args []string) error {
+	prefix := fs.String("prefix", "", "CIDR prefix or single address")
+	provider := fs.String("provider", "", "CDN provider")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if err := required("prefix", *prefix); err != nil {
+		return err
+	}
+	if err := required("provider", *provider); err != nil {
+		return err
+	}
+	p, err := cdn.ParsePrefix(*prefix)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errUsage, err)
+	}
+	c, err := s.CreateCDNPrefix(ctx, p, strings.TrimSpace(*provider), "manual")
+	if err != nil {
+		return err
+	}
+	audit(ctx, s, "cdnprefix.create", c.Provider+":"+c.Prefix.String())
+	fmt.Printf("cdn prefix %d added: %s (%s)\n", c.ID, c.Prefix, c.Provider)
+	return nil
+}
+
+func cdnList(ctx context.Context, s *pg.Store, fs *flag.FlagSet, args []string) error {
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	ps, err := s.CDNPrefixes(ctx)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tPREFIX\tPROVIDER\tSOURCE\tCREATED")
+	for _, p := range ps {
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", p.ID, p.Prefix, p.Provider, p.Source, fmtTime(&p.CreatedAt))
+	}
+	return tw.Flush()
+}
+
+func cdnRm(ctx context.Context, s *pg.Store, fs *flag.FlagSet, args []string) error {
+	id := fs.Int64("id", 0, "prefix id (see cdn list)")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if *id <= 0 {
+		return fmt.Errorf("%w: --id is required", errUsage)
+	}
+	p, err := s.DeleteCDNPrefix(ctx, *id)
+	if err != nil {
+		return err
+	}
+	audit(ctx, s, "cdnprefix.delete", p.Provider+":"+p.Prefix.String())
+	fmt.Printf("cdn prefix %d removed: %s (%s)\n", p.ID, p.Prefix, p.Provider)
+	return nil
+}
+
+func cdnImport(ctx context.Context, s *pg.Store, fs *flag.FlagSet, args []string) error {
+	file := fs.String("file", "", "file with one prefix per line; '#' starts a comment")
+	provider := fs.String("provider", "", "CDN provider of every prefix in the file")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if err := required("file", *file); err != nil {
+		return err
+	}
+	if err := required("provider", *provider); err != nil {
+		return err
+	}
+	f, err := os.Open(*file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	prefixes, err := readPrefixes(f)
+	if err != nil {
+		return err
+	}
+	if len(prefixes) == 0 {
+		return errors.New("no prefix found")
+	}
+	n, err := s.ImportCDNPrefixes(ctx, prefixes, strings.TrimSpace(*provider), "import:"+filepath.Base(*file))
+	if err != nil {
+		return err
+	}
+	audit(ctx, s, "cdnprefix.import", fmt.Sprintf("%s (%d new of %d)", strings.TrimSpace(*provider), n, len(prefixes)))
+	fmt.Printf("%d imported, %d already listed\n", n, int64(len(prefixes))-n)
+	return nil
+}
+
+// readPrefixes rejects the whole file if any line is invalid.
+func readPrefixes(r io.Reader) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	var bad []string
+	seen := map[netip.Prefix]struct{}{}
+	sc := bufio.NewScanner(r)
+	for line := 1; sc.Scan(); line++ {
+		text, _, _ := strings.Cut(sc.Text(), "#")
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		p, err := cdn.ParsePrefix(text)
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("line %d: %v", line, err))
+			continue
+		}
+		if _, dup := seen[p]; !dup {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("%d invalid line(s), nothing imported:\n  %s", len(bad), strings.Join(bad, "\n  "))
+	}
+	return out, nil
 }
 
 func newPasswordHash(fromStdin bool) (string, error) {
