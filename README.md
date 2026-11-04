@@ -112,9 +112,24 @@ GET https://www.virustotal.com/api/v3/ip_addresses/{ip}/resolutions?limit=40
 
 The `resolutions` (`host_name`, `ip_address`, `date`) go to the ClickHouse
 table `vt_resolutions`; the fetch goes to the Postgres table `vt_fetches`.
-The answer is `{"looked_up", "cached", "skipped_cdn", "skipped_reserved",
-"skipped_budget", "stopped_reason", "budget_remaining"}`, and the action is
-in the audit log as `vt.enrich`.
+
+The enrichment runs in the background, for at most 10 minutes, and does not
+depend on the request: the POST answers `202 {"job", "state": "running",
+"started_at"}` at once. One enrichment runs at a time per domain or
+campaign; a POST while one runs answers its state and starts nothing.
+`GET` on the same path (session, `viewer`) answers the state of the last
+enrichment, or `{"state": "none"}`:
+
+- `running`;
+- `done`, with `finished_at` and `{"looked_up", "cached", "skipped_cdn",
+  "skipped_reserved", "skipped_budget", "stopped_reason"}`;
+- `failed`, with the same fields and `error`.
+
+The jobs live in the memory of the `heimdall-api` process: a restart loses
+them, and a finished one is forgotten after an hour. The graph page polls
+every 2 seconds, then reloads with `?vt=1`; it resumes polling when opened
+during an enrichment. The action is in the audit log as `vt.enrich` at the
+end of the enrichment.
 
 Quota. The key is shared with other tools (300 lookups per minute, 1000 per
 day, 31K per month), so each lookup is one request and:

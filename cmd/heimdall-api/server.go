@@ -41,8 +41,15 @@ type server struct {
 	cdn   *cdn.Classifier
 	graph graphStores
 	// vt is nil without HEIMDALL_VT_API_KEY.
-	vt    *vt.Enricher
-	pages map[string]*template.Template
+	vt     *vt.Enricher
+	vtJobs *vtJobs
+	audits auditStore
+	pages  map[string]*template.Template
+}
+
+// auditStore writes the audit log.
+type auditStore interface {
+	Audit(ctx context.Context, userID *int64, action, target string) error
 }
 
 func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Store) (*server, error) {
@@ -78,17 +85,19 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		}
 	}
 	return &server{
-		cfg:   cfg,
-		log:   log,
-		pg:    pgs,
-		ch:    chs,
-		auth:  auth.NewManager(pgs, cfg.SessionTTL, !cfg.InsecureCookie),
-		ipLim: auth.NewLimiter(12*time.Second, 10),
-		usLim: auth.NewLimiter(30*time.Second, 5),
-		cdn:   cdns,
-		graph: graphStores{chs, pgs},
-		vt:    enricher,
-		pages: pages,
+		cfg:    cfg,
+		log:    log,
+		pg:     pgs,
+		ch:     chs,
+		auth:   auth.NewManager(pgs, cfg.SessionTTL, !cfg.InsecureCookie),
+		ipLim:  auth.NewLimiter(12*time.Second, 10),
+		usLim:  auth.NewLimiter(30*time.Second, 5),
+		cdn:    cdns,
+		graph:  graphStores{chs, pgs},
+		vt:     enricher,
+		vtJobs: newVTJobs(),
+		audits: pgs,
+		pages:  pages,
 	}, nil
 }
 
@@ -122,9 +131,11 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /graph/domain/{fqdn}", page(viewer, s.graphDomainPage))
 	mux.Handle("GET /graph/domain/{fqdn}/data", page(viewer, s.apiGraphDomain))
 	mux.Handle("POST /graph/domain/{fqdn}/vt", page(analyst, s.enrichGraphDomain))
+	mux.Handle("GET /graph/domain/{fqdn}/vt", page(viewer, s.vtJobDomain))
 	mux.Handle("GET /graph/campaign/{id}", page(viewer, s.graphCampaignPage))
 	mux.Handle("GET /graph/campaign/{id}/data", page(viewer, s.apiGraphCampaign))
 	mux.Handle("POST /graph/campaign/{id}/vt", page(analyst, s.enrichGraphCampaign))
+	mux.Handle("GET /graph/campaign/{id}/vt", page(viewer, s.vtJobCampaign))
 	mux.Handle("GET /events", page(viewer, s.eventsPage))
 	mux.Handle("GET /admin", page(admin, s.adminPage))
 	mux.Handle("POST /admin/resolvers", page(admin, s.createResolver))
@@ -257,11 +268,16 @@ func (s *server) reloadCDN(ctx context.Context) {
 }
 
 func (s *server) audit(r *http.Request, action, target string) {
+	s.auditCtx(r.Context(), action, target)
+}
+
+// auditCtx writes to the audit log as the user of ctx.
+func (s *server) auditCtx(ctx context.Context, action, target string) {
 	var uid *int64
-	if u := auth.UserFrom(r.Context()); u != nil {
+	if u := auth.UserFrom(ctx); u != nil {
 		uid = &u.ID
 	}
-	if err := s.pg.Audit(r.Context(), uid, action, target); err != nil {
+	if err := s.audits.Audit(ctx, uid, action, target); err != nil {
 		s.log.Error("audit", "action", action, "target", target, "err", err)
 	}
 }

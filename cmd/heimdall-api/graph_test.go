@@ -421,7 +421,8 @@ func TestRenderGraphPage(t *testing.T) {
 		`data-source="/graph/domain/www.x.example/data?depth=1&amp;vt=1"`,
 		`<a href="/graph/domain/www.x.example?depth=2&amp;vt=1">2</a>`,
 		`<input type="checkbox" id="graph-vt-toggle" checked> VirusTotal`,
-		"VT lookups left today: 480 / 500", "seen by VirusTotal only", "VirusTotal resolution", `id="graph-vt-summary"`,
+		"VT lookups left today: 480 / 500", "seen by VirusTotal only", "VirusTotal resolution",
+		`id="graph-vt-summary" data-endpoint="/graph/domain/www.x.example/vt?depth=1"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("vt graph page lacks %q", want)
