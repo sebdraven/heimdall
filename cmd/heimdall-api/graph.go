@@ -10,16 +10,19 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebdraven/heimdall/internal/cdn"
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
+	"github.com/sebdraven/heimdall/internal/vt"
 )
 
 const (
 	graphMaxNodes = 500
 	graphMaxDepth = 2
+	graphMaxVT    = 2000
 )
 
 const (
@@ -28,6 +31,10 @@ const (
 	nodeNSSet  = "nsset"
 	edgeCNAME  = "CNAME"
 	edgeNSSet  = "NS_SET"
+	edgeVT     = "VT"
+
+	sourceHeimdall = "heimdall"
+	sourceVT       = "vt"
 )
 
 // pdnsStore and watchStore are what the graph endpoints read from ClickHouse
@@ -38,6 +45,7 @@ type pdnsStore interface {
 	NSSet(ctx context.Context, fqdn string) (*ch.NSSet, error)
 	Pivots(ctx context.Context, fqdn string, values []ch.PivotValue, limit int) ([]ch.Pivot, error)
 	NSPairPivots(ctx context.Context, zone string, set []string, limit int) ([]ch.NSPairPivot, error)
+	VTPairs(ctx context.Context, hosts, ips []string, limit int) ([]ch.VTPair, error)
 }
 
 type watchStore interface {
@@ -58,12 +66,16 @@ type graphNode struct {
 	Watched  bool   `json:"watched"`
 	Campaign string `json:"campaign"`
 	Href     string `json:"href"`
+	Source   string `json:"source"`
 }
 
+// graphEdge has first_seen and last_seen for a VT edge only.
 type graphEdge struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	Kind string `json:"kind"`
+	From      string     `json:"from"`
+	To        string     `json:"to"`
+	Kind      string     `json:"kind"`
+	FirstSeen *time.Time `json:"first_seen,omitempty"`
+	LastSeen  *time.Time `json:"last_seen,omitempty"`
 }
 
 type graphJSON struct {
@@ -82,22 +94,29 @@ type graphDomain struct {
 }
 
 // graphInput holds the domains of a graph and the other names sharing an
-// address (IPPeers) or an NS set (NSPeers, by nsset node id) with them.
-// Partial is set when a store call hit its limit.
+// address (IPPeers) or an NS set (NSPeers, by nsset node id) with them, and
+// the cached VirusTotal pairs (VT). Partial is set when a store call hit its
+// limit.
 type graphInput struct {
 	Domains   []graphDomain
 	IPPeers   []ch.Pivot
 	NSPeers   map[string][]ch.NSPairPivot
+	VT        []ch.VTPair
 	MinShared int
 	Partial   bool
 }
 
 func domainNode(fqdn string) graphNode {
-	return graphNode{ID: "d:" + fqdn, Kind: nodeDomain, Label: fqdn, Href: "/domains/" + url.PathEscape(fqdn)}
+	return graphNode{ID: "d:" + fqdn, Kind: nodeDomain, Label: fqdn, Href: "/domains/" + url.PathEscape(fqdn), Source: sourceHeimdall}
 }
 
 func ipNode(value string) graphNode {
-	return graphNode{ID: "ip:" + value, Kind: nodeIP, Label: value, Href: "/rdata/" + url.PathEscape(value)}
+	return graphNode{ID: "ip:" + value, Kind: nodeIP, Label: value, Href: "/rdata/" + url.PathEscape(value), Source: sourceHeimdall}
+}
+
+func vtNode(n graphNode) graphNode {
+	n.Source = sourceVT
+	return n
 }
 
 func nssetID(ns []string) string {
@@ -106,14 +125,16 @@ func nssetID(ns []string) string {
 
 func nssetNode(z *ch.NSSet) graphNode {
 	ns := slices.Compact(slices.Sorted(slices.Values(z.NS)))
-	return graphNode{ID: nssetID(ns), Kind: nodeNSSet, Label: strings.Join(ns, ", "), Href: "/domains/" + url.PathEscape(z.Zone)}
+	return graphNode{ID: nssetID(ns), Kind: nodeNSSet, Label: strings.Join(ns, ", "), Href: "/domains/" + url.PathEscape(z.Zone), Source: sourceHeimdall}
 }
+
+type edgeKey struct{ from, to, kind string }
 
 type graphBuilder struct {
 	g     graphJSON
 	limit int
 	nodes map[string]bool
-	edges map[graphEdge]bool
+	edges map[edgeKey]bool
 }
 
 // node adds n unless the graph is full, and reports whether n is in it.
@@ -130,14 +151,18 @@ func (b *graphBuilder) node(n graphNode) bool {
 	return true
 }
 
-// edge adds to before from: a peer whose target was cut is not added.
 func (b *graphBuilder) edge(from, to graphNode, kind string) {
+	b.addEdge(from, to, graphEdge{From: from.ID, To: to.ID, Kind: kind})
+}
+
+// addEdge adds to before from: a peer whose target was cut is not added.
+func (b *graphBuilder) addEdge(from, to graphNode, e graphEdge) {
 	if !b.node(to) || !b.node(from) {
 		return
 	}
-	e := graphEdge{From: from.ID, To: to.ID, Kind: kind}
-	if !b.edges[e] {
-		b.edges[e] = true
+	k := edgeKey{e.From, e.To, e.Kind}
+	if !b.edges[k] {
+		b.edges[k] = true
 		b.g.Edges = append(b.g.Edges, e)
 	}
 }
@@ -150,13 +175,14 @@ type peerLink struct {
 
 // buildGraph turns in into a graph of at most limit nodes, the domains of in
 // first. A peer outside them is kept if it shares an address or an NS set
-// with at least in.MinShared of them.
+// with at least in.MinShared of them. VirusTotal pairs come last, and only
+// those touching a node already in the graph.
 func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
 	b := &graphBuilder{
 		g:     graphJSON{Nodes: []graphNode{}, Edges: []graphEdge{}, Truncated: in.Partial},
 		limit: limit,
 		nodes: map[string]bool{},
-		edges: map[graphEdge]bool{},
+		edges: map[edgeKey]bool{},
 	}
 	members := map[string]bool{}
 	for _, d := range in.Domains {
@@ -187,7 +213,6 @@ func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
 			nsNodes[n.ID] = n
 		}
 	}
-	b.g.ExcludedCDN = len(excluded)
 
 	shared := map[string]map[string]bool{}
 	var links []peerLink
@@ -219,6 +244,20 @@ func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
 			b.edge(domainNode(l.peer), l.to, l.kind)
 		}
 	}
+
+	for _, p := range in.VT {
+		from, to := vtNode(domainNode(p.HostName)), vtNode(ipNode(p.IP))
+		if !b.nodes[from.ID] && !b.nodes[to.ID] {
+			continue
+		}
+		if _, ok := cl.Classify(p.IP); ok {
+			excluded[p.IP] = true
+			continue
+		}
+		first, last := p.Period.First.UTC(), p.Period.Last.UTC()
+		b.addEdge(from, to, graphEdge{From: from.ID, To: to.ID, Kind: edgeVT, FirstSeen: &first, LastSeen: &last})
+	}
+	b.g.ExcludedCDN = len(excluded)
 	return b.g
 }
 
@@ -284,8 +323,9 @@ func (s *server) loadGraphDomain(ctx context.Context, fqdn string) (graphDomain,
 }
 
 // loadGraphInput reads the domains and, with peers, the names sharing their
-// addresses or NS sets. Past graphMaxNodes domains the rest is not read.
-func (s *server) loadGraphInput(ctx context.Context, fqdns []string, peers bool) (graphInput, error) {
+// addresses or NS sets, and withVT the cached VirusTotal pairs of all of
+// them. Past graphMaxNodes domains the rest is not read.
+func (s *server) loadGraphInput(ctx context.Context, fqdns []string, peers, withVT bool) (graphInput, error) {
 	in := graphInput{NSPeers: map[string][]ch.NSPairPivot{}}
 	if len(fqdns) > graphMaxNodes {
 		fqdns, in.Partial = fqdns[:graphMaxNodes], true
@@ -320,11 +360,43 @@ func (s *server) loadGraphInput(ctx context.Context, fqdns []string, peers bool)
 		in.NSPeers[id] = matches
 		in.Partial = in.Partial || len(matches) == graphMaxNodes
 	}
+	if !withVT {
+		return in, nil
+	}
+	hosts, ips := vtCandidates(in, s.cdn)
+	pairs, err := s.graph.VTPairs(ctx, hosts, ips, graphMaxVT)
+	if err != nil {
+		return in, fmt.Errorf("vt pairs: %w", err)
+	}
+	in.VT = pairs
+	in.Partial = in.Partial || len(pairs) == graphMaxVT
 	return in, nil
 }
 
-func (s *server) loadGraph(ctx context.Context, fqdns []string, peers bool, minShared int) (graphJSON, error) {
-	in, err := s.loadGraphInput(ctx, fqdns, peers)
+// vtCandidates returns the names and the non-CDN addresses that may become
+// nodes of the graph of in.
+func vtCandidates(in graphInput, cl *cdn.Classifier) (hosts, ips []string) {
+	for _, d := range in.Domains {
+		hosts = append(hosts, d.FQDN)
+		hosts = append(hosts, d.CNAMEs...)
+		kept, _ := splitCDN(d.Values, cl)
+		for _, v := range kept {
+			ips = append(ips, v.RData)
+		}
+	}
+	for _, p := range in.IPPeers {
+		hosts = append(hosts, p.Domain)
+	}
+	for _, ms := range in.NSPeers {
+		for _, m := range ms {
+			hosts = append(hosts, m.Domain)
+		}
+	}
+	return slices.Compact(slices.Sorted(slices.Values(hosts))), slices.Compact(slices.Sorted(slices.Values(ips)))
+}
+
+func (s *server) loadGraph(ctx context.Context, fqdns []string, peers bool, minShared int, withVT bool) (graphJSON, error) {
+	in, err := s.loadGraphInput(ctx, fqdns, peers, withVT)
 	if err != nil {
 		return graphJSON{}, err
 	}
@@ -338,13 +410,43 @@ func (s *server) loadGraph(ctx context.Context, fqdns []string, peers bool, minS
 	return g, nil
 }
 
+// wantVT reports whether the request asks for the cached VirusTotal pairs,
+// which are ignored when VirusTotal is not configured.
+func (s *server) wantVT(r *http.Request) bool {
+	return s.vt != nil && r.URL.Query().Get("vt") == "1"
+}
+
+// loadDomainGraph reads the graph of /graph/domain/{fqdn}?depth=.
+func (s *server) loadDomainGraph(r *http.Request, withVT bool) (graphJSON, string, error) {
+	fqdn := resolver.Name(r.PathValue("fqdn"))
+	depth := intParam(r, "depth", 1, graphMaxDepth)
+	g, err := s.loadGraph(r.Context(), []string{fqdn}, depth == graphMaxDepth, 1, withVT)
+	return g, fqdn, err
+}
+
+// loadCampaignGraph reads the graph of /graph/campaign/{id}.
+func (s *server) loadCampaignGraph(ctx context.Context, id int64, withVT bool) (graphJSON, string, error) {
+	c, err := s.graph.Campaign(ctx, id)
+	if err != nil {
+		return graphJSON{}, "", err
+	}
+	domains, err := s.graph.Domains(ctx, &id)
+	if err != nil {
+		return graphJSON{}, "", err
+	}
+	fqdns := make([]string, 0, len(domains))
+	for _, d := range domains {
+		fqdns = append(fqdns, d.FQDN)
+	}
+	g, err := s.loadGraph(ctx, fqdns, true, 2, withVT)
+	return g, c.Name, err
+}
+
 // apiGraphDomain serves /api/graph/domain/{fqdn}: depth 1 is the domain,
 // its addresses, CNAME targets and NS set, depth 2 adds the names sharing
 // them.
 func (s *server) apiGraphDomain(w http.ResponseWriter, r *http.Request) {
-	fqdn := resolver.Name(r.PathValue("fqdn"))
-	depth := intParam(r, "depth", 1, graphMaxDepth)
-	g, err := s.loadGraph(r.Context(), []string{fqdn}, depth == graphMaxDepth, 1)
+	g, _, err := s.loadDomainGraph(r, s.wantVT(r))
 	if err != nil {
 		s.apiStoreError(w, r, err)
 		return
@@ -361,20 +463,7 @@ func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if _, err := s.graph.Campaign(r.Context(), id); err != nil {
-		s.apiStoreError(w, r, err)
-		return
-	}
-	domains, err := s.graph.Domains(r.Context(), &id)
-	if err != nil {
-		s.apiStoreError(w, r, err)
-		return
-	}
-	fqdns := make([]string, 0, len(domains))
-	for _, d := range domains {
-		fqdns = append(fqdns, d.FQDN)
-	}
-	g, err := s.loadGraph(r.Context(), fqdns, true, 2)
+	g, _, err := s.loadCampaignGraph(r.Context(), id, s.wantVT(r))
 	if err != nil {
 		s.apiStoreError(w, r, err)
 		return
@@ -383,7 +472,7 @@ func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 }
 
 // graphView is what graph.html shows. Path is set for a domain graph, which
-// offers both depths.
+// offers both depths. VT is nil when VirusTotal is not configured.
 type graphView struct {
 	Title    string
 	Back     string
@@ -391,16 +480,49 @@ type graphView struct {
 	Path     string
 	Depth    int
 	MaxNodes int
+	VT       *graphVTView
+}
+
+// graphVTView drives the VirusTotal controls. Remaining is -1 when unknown.
+type graphVTView struct {
+	On        bool
+	Endpoint  string
+	Budget    int
+	Remaining int
+}
+
+// setVT adds the VirusTotal controls to v and, when asked, the cached pairs
+// to its source.
+func (s *server) setVT(r *http.Request, v *graphView, endpoint string) {
+	if s.vt == nil {
+		return
+	}
+	vv := &graphVTView{On: s.wantVT(r), Endpoint: endpoint, Budget: s.vt.Budget, Remaining: -1}
+	if vv.On {
+		sep := "?"
+		if strings.Contains(v.Source, "?") {
+			sep = "&"
+		}
+		v.Source += sep + "vt=1"
+	}
+	if n, err := s.vt.Remaining(r.Context()); err != nil {
+		s.log.Warn("vt usage", "err", err)
+	} else {
+		vv.Remaining = n
+	}
+	v.VT = vv
 }
 
 func (s *server) graphDomainPage(w http.ResponseWriter, r *http.Request) {
 	fqdn := resolver.Name(r.PathValue("fqdn"))
 	depth := intParam(r, "depth", 1, graphMaxDepth)
 	path := "/graph/domain/" + url.PathEscape(fqdn)
-	s.render(w, r, "graph", http.StatusOK, graphView{
+	v := graphView{
 		Title: fqdn, Back: "/domains/" + url.PathEscape(fqdn),
 		Source: path + "/data?depth=" + strconv.Itoa(depth), Path: path, Depth: depth, MaxNodes: graphMaxNodes,
-	})
+	}
+	s.setVT(r, &v, path+"/vt?depth="+strconv.Itoa(depth))
+	s.render(w, r, "graph", http.StatusOK, v)
 }
 
 func (s *server) graphCampaignPage(w http.ResponseWriter, r *http.Request) {
@@ -414,8 +536,76 @@ func (s *server) graphCampaignPage(w http.ResponseWriter, r *http.Request) {
 		s.storeFail(w, r, err)
 		return
 	}
-	s.render(w, r, "graph", http.StatusOK, graphView{
+	v := graphView{
 		Title: c.Name, Back: fmt.Sprintf("/campaigns/%d", id),
 		Source: fmt.Sprintf("/graph/campaign/%d/data", id), MaxNodes: graphMaxNodes,
-	})
+	}
+	s.setVT(r, &v, fmt.Sprintf("/graph/campaign/%d/vt", id))
+	s.render(w, r, "graph", http.StatusOK, v)
+}
+
+type vtEnrichJSON struct {
+	vt.Summary
+	BudgetRemaining int `json:"budget_remaining"`
+}
+
+// enrichGraphDomain serves POST /graph/domain/{fqdn}/vt?depth=: looks up
+// with VirusTotal the domain and IP nodes of the graph without VirusTotal.
+func (s *server) enrichGraphDomain(w http.ResponseWriter, r *http.Request) {
+	if s.vt == nil {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	g, fqdn, err := s.loadDomainGraph(r, false)
+	if err != nil {
+		s.apiStoreError(w, r, err)
+		return
+	}
+	s.enrichGraph(w, r, g, "domain "+fqdn)
+}
+
+// enrichGraphCampaign serves POST /graph/campaign/{id}/vt.
+func (s *server) enrichGraphCampaign(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if s.vt == nil || !ok {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	g, name, err := s.loadCampaignGraph(r.Context(), id, false)
+	if err != nil {
+		s.apiStoreError(w, r, err)
+		return
+	}
+	s.enrichGraph(w, r, g, "campaign "+name)
+}
+
+func (s *server) enrichGraph(w http.ResponseWriter, r *http.Request, g graphJSON, target string) {
+	var objects []string
+	for _, n := range g.Nodes {
+		if n.Kind == nodeDomain || n.Kind == nodeIP {
+			objects = append(objects, n.ID)
+		}
+	}
+	sum, err := s.vt.Enrich(r.Context(), objects)
+	s.audit(r, "vt.enrich", fmt.Sprintf("%s (looked up %d, cached %d, skipped for budget %d%s)",
+		target, sum.LookedUp, sum.Cached, sum.SkippedBudget, stopNote(sum.StoppedReason)))
+	if err != nil {
+		s.log.Error("vt enrich", "target", target, "err", err)
+		apiError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	out := vtEnrichJSON{Summary: sum, BudgetRemaining: -1}
+	if n, err := s.vt.Remaining(r.Context()); err != nil {
+		s.log.Warn("vt usage", "err", err)
+	} else {
+		out.BudgetRemaining = n
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func stopNote(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ", stopped: " + reason
 }
