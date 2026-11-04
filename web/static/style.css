@@ -11,6 +11,8 @@
   --graph-domain: #8a9199;
   --graph-ip: #2e86ab;
   --graph-nsset: #e0a030;
+  --graph-vt: #7b4fbf;
+  --graph-vt-node: #b39ddb;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -120,4 +122,7 @@ main:has(> .graph-canvas) { max-width: none; padding-bottom: 1rem; }
 .swatch-domain { background: var(--graph-domain); }
 .swatch-ip { background: var(--graph-ip); }
 .swatch-nsset { background: var(--graph-nsset); }
+.swatch-vt-node { background: var(--graph-vt-node); }
+.swatch-line { display: inline-block; width: 1.2rem; margin-right: .35rem; vertical-align: middle; }
+.swatch-vt { border-top: 2px dashed var(--graph-vt); }
 .graph-canvas { position: relative; height: calc(100vh - 8.5rem); min-height: 24rem; border: 1px solid var(--line); border-radius: 4px; }
