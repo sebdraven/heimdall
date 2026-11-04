@@ -155,7 +155,24 @@ address only VirusTotal saw becomes a node with `"source": "vt"` (other
 nodes have `"source": "heimdall"`). CDN addresses are left out and counted
 in `excluded_cdn`. The 500 nodes cap applies to the whole graph, Heimdall
 nodes first. The "VirusTotal" box of the graph page reloads it with
-`?vt=1`; the page shows the lookups left today.
+`?vt=1`; the page shows the lookups left today. VT edges are dashed.
+
+The domain and rdata pages read the cache only too. With a key,
+`/domains/{fqdn}` has a "VirusTotal" section after Passive DNS:
+
+- "last looked up <time> (<status>)" from `vt_fetches` for `d:<fqdn>`, or
+  "not looked up yet";
+- the addresses VirusTotal saw for the name, latest first: IP, first and
+  last seen by VirusTotal, the CDN marker, and "also seen by Heimdall" when
+  the address is in the name's passive DNS;
+- the "Enrich with VT" button (`analyst`), which starts the enrichment of
+  the depth 1 graph of the name, follows it as the graph page does and
+  reloads the page at the end.
+
+`/rdata/{value}`, when the value is an address, has the same section
+without the button: its last lookup (`ip:<value>`) and the names VirusTotal
+saw on it, marked "watched" when in the watchlist. `web/static/vtjob.js`
+follows the enrichment on both the graph and the domain pages.
 
 ## Quick start
 
@@ -250,11 +267,16 @@ GET    /healthz                     no auth
 `since` and `until` accept a duration (`24h`), a date, RFC 3339 or epoch seconds.
 
 `/api/domains/{fqdn}/detail` returns
-`{"domain", "current", "changes", "pdns"}`: the watchlist entry (`null` if the
-name is not watched, which is not a 404), the latest answer per qtype and
-resolver over the last 7 days, the most recent changes (`limit`, default 200,
-max 1000) and up to 1000 passive DNS records owned by the name. Dates are
-RFC 3339 UTC.
+`{"domain", "current", "changes", "pdns", "vt"}`: the watchlist entry (`null`
+if the name is not watched, which is not a 404), the latest answer per qtype
+and resolver over the last 7 days, the most recent changes (`limit`, default
+200, max 1000), up to 1000 passive DNS records owned by the name and the
+cached VirusTotal resolutions. Dates are RFC 3339 UTC.
+
+`vt` is `{"looked_up_at", "status", "resolutions": [{"ip", "first_seen",
+"last_seen"}]}`, from the cache only, latest first, at most 500 addresses.
+`status` is `ok`, `empty` or `error`. `vt` is `null` without a VirusTotal
+key or when the name was never looked up.
 
 `changes` merges, newest first and within the same `limit`, the changes of
 the name and those of its zone `zone:{fqdn}`, as the page does. Each carries
@@ -386,8 +408,10 @@ To update one of them:
 3. Update the version and sha256 in this table.
 4. For Pivotick, check the type definitions of the release for renamed
    options or callbacks used by `graph.js` (`UI.mode`, `simulation.useWorker`,
-   `render.nodeTypeAccessor`, `render.nodeStyleMap`, `render.defaultNodeStyle`,
-   `callbacks.onNodeClick`), and that the graph pages still work under the
+   `render.nodeTypeAccessor`, `render.nodeStyleMap`, `render.defaultNodeStyle`
+   with `textTruncate`, `render.edgeTypeAccessor`, `render.edgeStyleMap` with
+   `dashed`, `animateDash` and `strokeColor`, `callbacks.onNodeClick`), and
+   that the graph pages still work under the
    CSP of `cmd/heimdall-api/server.go`.
 
 ## Configuration

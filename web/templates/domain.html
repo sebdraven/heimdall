@@ -1,4 +1,5 @@
 {{define "title"}}{{.Data.FQDN}} · Heimdall{{end}}
+{{define "head"}}{{if .Data.VT}}<script src="/static/vtjob.js" defer></script>{{end}}{{end}}
 {{define "content"}}
 <h1>{{.Data.FQDN}} <a class="title-link" href="/graph/domain/{{.Data.FQDN}}">Graph</a></h1>
 {{with .Data.Domain}}
@@ -89,4 +90,25 @@
   {{end}}
   </tbody>
 </table>
+
+{{with .Data.VT}}
+<h2>VirusTotal</h2>
+<p class="meta">{{template "vt_status" .}}{{if $.Can "analyst"}} <button type="button" id="vt-enrich" data-csrf="{{$.CSRF}}">Enrich with VT</button>{{end}}</p>
+<p class="notice" id="vt-job" data-endpoint="{{.Endpoint}}" hidden></p>
+<table>
+  <thead><tr><th>IP</th><th>First seen (VT)</th><th>Last seen (VT)</th><th>Markers</th></tr></thead>
+  <tbody>
+  {{range .IPs}}
+    <tr>
+      <td><a href="/rdata/{{.IP}}"><code>{{.IP}}</code></a></td>
+      <td class="nowrap">{{ts .Period.First}}</td>
+      <td class="nowrap">{{ts .Period.Last}}</td>
+      <td>{{template "cdn_marker" .IP}}{{if .Heimdall}} <span class="badge">also seen by Heimdall</span>{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4" class="empty">No VirusTotal resolution cached.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
 {{end}}

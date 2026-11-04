@@ -51,6 +51,21 @@ func (s *Store) FreshVTObjects(ctx context.Context, objects []string, since time
 	return out, nil
 }
 
+// VTFetch is the last lookup of an object.
+type VTFetch struct {
+	FetchedAt time.Time
+	Status    string
+	Count     int
+}
+
+// LastVTFetch returns the last lookup of object, or ErrNotFound.
+func (s *Store) LastVTFetch(ctx context.Context, object string) (VTFetch, error) {
+	var f VTFetch
+	err := s.pool.QueryRow(ctx, `SELECT fetched_at, status, count FROM vt_fetches WHERE object = $1`, object).
+		Scan(&f.FetchedAt, &f.Status, &f.Count)
+	return f, mapErr(err)
+}
+
 func (s *Store) RecordVTFetch(ctx context.Context, object, status string, count int) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO vt_fetches (object, fetched_at, status, count) VALUES ($1, now(), $2, $3)
