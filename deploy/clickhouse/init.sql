@@ -102,6 +102,18 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(ts)
 ORDER BY (ts, domain);
 
+-- VirusTotal resolutions cache, filled by heimdall-api on request.
+CREATE TABLE IF NOT EXISTS heimdall.vt_resolutions
+(
+    host_name  String,
+    ip         String,
+    date       DateTime,
+    fetched_at DateTime64(3),
+    INDEX idx_ip ip TYPE bloom_filter(0.01) GRANULARITY 4
+)
+ENGINE = ReplacingMergeTree(fetched_at)
+ORDER BY (host_name, ip, date);
+
 -- Change-detection state, one row per tuple after FINAL. missing[i] is the
 -- consecutive absence count of tracked[i].
 CREATE TABLE IF NOT EXISTS heimdall.tuple_state
