@@ -22,6 +22,7 @@ import (
 	"github.com/sebdraven/heimdall/internal/config"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
+	"github.com/sebdraven/heimdall/internal/vt"
 	"github.com/sebdraven/heimdall/web"
 )
 
@@ -39,6 +40,8 @@ type server struct {
 	usLim *auth.Limiter
 	cdn   *cdn.Classifier
 	graph graphStores
+	// vt is nil without HEIMDALL_VT_API_KEY.
+	vt    *vt.Enricher
 	pages map[string]*template.Template
 }
 
@@ -67,6 +70,13 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		}
 		pages[name] = t
 	}
+	var enricher *vt.Enricher
+	if cfg.VTAPIKey != "" {
+		enricher = &vt.Enricher{
+			Lookup: vt.New(cfg.VTAPIKey), Ledger: pgs, Sink: chs, CDN: cdns,
+			Budget: cfg.VTDailyBudget, TTL: cfg.VTTTL, Log: log,
+		}
+	}
 	return &server{
 		cfg:   cfg,
 		log:   log,
@@ -77,6 +87,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		usLim: auth.NewLimiter(30*time.Second, 5),
 		cdn:   cdns,
 		graph: graphStores{chs, pgs},
+		vt:    enricher,
 		pages: pages,
 	}, nil
 }
@@ -110,8 +121,10 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /search", page(viewer, s.searchPage))
 	mux.Handle("GET /graph/domain/{fqdn}", page(viewer, s.graphDomainPage))
 	mux.Handle("GET /graph/domain/{fqdn}/data", page(viewer, s.apiGraphDomain))
+	mux.Handle("POST /graph/domain/{fqdn}/vt", page(analyst, s.enrichGraphDomain))
 	mux.Handle("GET /graph/campaign/{id}", page(viewer, s.graphCampaignPage))
 	mux.Handle("GET /graph/campaign/{id}/data", page(viewer, s.apiGraphCampaign))
+	mux.Handle("POST /graph/campaign/{id}/vt", page(analyst, s.enrichGraphCampaign))
 	mux.Handle("GET /events", page(viewer, s.eventsPage))
 	mux.Handle("GET /admin", page(admin, s.adminPage))
 	mux.Handle("POST /admin/resolvers", page(admin, s.createResolver))
