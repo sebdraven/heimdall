@@ -7,9 +7,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
+	"github.com/sebdraven/heimdall/internal/vt"
 )
 
 const testNSSet = "ns:ns1.p.example,ns2.p.example"
@@ -59,10 +61,10 @@ func TestBuildGraphDomain(t *testing.T) {
 	if g.ExcludedCDN != 2 || g.Truncated {
 		t.Errorf("excluded_cdn %d truncated %v, want 2 and false", g.ExcludedCDN, g.Truncated)
 	}
-	if got, want := encode(t, g.Nodes[4]), `{"id":"`+testNSSet+`","kind":"nsset","label":"ns1.p.example, ns2.p.example","watched":false,"campaign":"","href":"/domains/x.example"}`; got != want {
+	if got, want := encode(t, g.Nodes[4]), `{"id":"`+testNSSet+`","kind":"nsset","label":"ns1.p.example, ns2.p.example","watched":false,"campaign":"","href":"/domains/x.example","source":"heimdall"}`; got != want {
 		t.Errorf("nsset node = %s, want %s", got, want)
 	}
-	if got, want := encode(t, g.Nodes[2]), `{"id":"ip:2001:db8::1","kind":"ip","label":"2001:db8::1","watched":false,"campaign":"","href":"/rdata/2001:db8::1"}`; got != want {
+	if got, want := encode(t, g.Nodes[2]), `{"id":"ip:2001:db8::1","kind":"ip","label":"2001:db8::1","watched":false,"campaign":"","href":"/rdata/2001:db8::1","source":"heimdall"}`; got != want {
 		t.Errorf("ip node = %s, want %s", got, want)
 	}
 }
@@ -138,14 +140,87 @@ func TestCNAMETargets(t *testing.T) {
 	}
 }
 
+func vtPair(host, ip string) ch.VTPair {
+	return ch.VTPair{HostName: host, IP: ip, Period: ch.Period{
+		First: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), Last: time.Date(2024, 3, 4, 0, 0, 0, 0, time.UTC),
+	}}
+}
+
+func TestBuildGraphVT(t *testing.T) {
+	g := buildGraph(graphInput{
+		Domains: []graphDomain{
+			{FQDN: "a.example", Values: []ch.PivotValue{pivotA("192.0.2.1")}},
+		},
+		VT: []ch.VTPair{
+			vtPair("a.example", "192.0.2.1"),
+			vtPair("a.example", "192.0.2.1"),
+			vtPair("a.example", "198.51.100.7"),
+			vtPair("other.example", "192.0.2.1"),
+			vtPair("a.example", "104.16.0.9"),
+			vtPair("far.example", "203.0.113.5"),
+		},
+		MinShared: 1,
+	}, testCDN(), graphMaxNodes)
+
+	nodes, edges := graphSummary(g)
+	if want := "d:a.example ip:192.0.2.1 ip:198.51.100.7 d:other.example"; nodes != want {
+		t.Errorf("nodes = %s\nwant    %s", nodes, want)
+	}
+	if want := "d:a.example>ip:192.0.2.1/A d:a.example>ip:192.0.2.1/VT d:a.example>ip:198.51.100.7/VT d:other.example>ip:192.0.2.1/VT"; edges != want {
+		t.Errorf("edges = %s\nwant    %s", edges, want)
+	}
+	var sources []string
+	for _, n := range g.Nodes {
+		sources = append(sources, n.Source)
+	}
+	if got := strings.Join(sources, " "); got != "heimdall heimdall vt vt" {
+		t.Errorf("sources = %s", got)
+	}
+	if g.ExcludedCDN != 1 || g.Truncated {
+		t.Errorf("excluded_cdn %d truncated %v, want 1 and false", g.ExcludedCDN, g.Truncated)
+	}
+	if got, want := encode(t, g.Edges[1]), `{"from":"d:a.example","to":"ip:192.0.2.1","kind":"VT","first_seen":"2024-01-02T00:00:00Z","last_seen":"2024-03-04T00:00:00Z"}`; got != want {
+		t.Errorf("vt edge = %s, want %s", got, want)
+	}
+	if got, want := encode(t, g.Edges[0]), `{"from":"d:a.example","to":"ip:192.0.2.1","kind":"A"}`; got != want {
+		t.Errorf("A edge = %s, want %s", got, want)
+	}
+}
+
+func TestBuildGraphVTLimit(t *testing.T) {
+	g := buildGraph(graphInput{
+		Domains:   []graphDomain{{FQDN: "a.example", Values: []ch.PivotValue{pivotA("192.0.2.1")}}},
+		IPPeers:   []ch.Pivot{{Domain: "b.example", RRType: "A", RData: "192.0.2.1"}},
+		VT:        []ch.VTPair{vtPair("a.example", "198.51.100.7"), vtPair("b.example", "192.0.2.1")},
+		MinShared: 1,
+	}, testCDN(), 3)
+	nodes, edges := graphSummary(g)
+	if nodes != "d:a.example ip:192.0.2.1 d:b.example" || !g.Truncated {
+		t.Errorf("nodes %q truncated %v, want the Heimdall nodes only", nodes, g.Truncated)
+	}
+	if want := "d:a.example>ip:192.0.2.1/A d:b.example>ip:192.0.2.1/A d:b.example>ip:192.0.2.1/VT"; edges != want {
+		t.Errorf("edges = %s\nwant    %s", edges, want)
+	}
+}
+
 type fakeGraphStore struct {
 	values  map[string][]ch.PivotValue
 	current map[string][]ch.Current
 	ns      map[string]*ch.NSSet
 	pivots  map[string][]ch.Pivot
 	pairs   map[string][]ch.NSPairPivot
+	vt      []ch.VTPair
+	vtHosts []string
+	vtIPs   []string
+	vtCalls int
 	watched map[string]pg.Domain
 	lookups int
+}
+
+func (f *fakeGraphStore) VTPairs(_ context.Context, hosts, ips []string, _ int) ([]ch.VTPair, error) {
+	f.vtCalls++
+	f.vtHosts, f.vtIPs = hosts, ips
+	return f.vt, nil
 }
 
 func (f *fakeGraphStore) PivotValues(_ context.Context, fqdn string) ([]ch.PivotValue, error) {
@@ -231,10 +306,10 @@ func TestAPIGraphDomain(t *testing.T) {
 	s, f := graphTestServer(t)
 	code, body := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example", "fqdn", "WWW.X.example.")
 	want := `{"nodes":[` +
-		`{"id":"d:www.x.example","kind":"domain","label":"www.x.example","watched":true,"campaign":"spynote","href":"/domains/www.x.example"},` +
-		`{"id":"ip:192.0.2.1","kind":"ip","label":"192.0.2.1","watched":false,"campaign":"","href":"/rdata/192.0.2.1"},` +
-		`{"id":"d:cdn.y.example","kind":"domain","label":"cdn.y.example","watched":false,"campaign":"","href":"/domains/cdn.y.example"},` +
-		`{"id":"` + testNSSet + `","kind":"nsset","label":"ns1.p.example, ns2.p.example","watched":false,"campaign":"","href":"/domains/x.example"}],` +
+		`{"id":"d:www.x.example","kind":"domain","label":"www.x.example","watched":true,"campaign":"spynote","href":"/domains/www.x.example","source":"heimdall"},` +
+		`{"id":"ip:192.0.2.1","kind":"ip","label":"192.0.2.1","watched":false,"campaign":"","href":"/rdata/192.0.2.1","source":"heimdall"},` +
+		`{"id":"d:cdn.y.example","kind":"domain","label":"cdn.y.example","watched":false,"campaign":"","href":"/domains/cdn.y.example","source":"heimdall"},` +
+		`{"id":"` + testNSSet + `","kind":"nsset","label":"ns1.p.example, ns2.p.example","watched":false,"campaign":"","href":"/domains/x.example","source":"heimdall"}],` +
 		`"edges":[{"from":"d:www.x.example","to":"ip:192.0.2.1","kind":"A"},` +
 		`{"from":"d:www.x.example","to":"d:cdn.y.example","kind":"CNAME"},` +
 		`{"from":"d:www.x.example","to":"` + testNSSet + `","kind":"NS_SET"}],` +
@@ -248,7 +323,7 @@ func TestAPIGraphDomain(t *testing.T) {
 
 	_, depth2 := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example?depth=2", "fqdn", "www.x.example")
 	for _, want := range []string{
-		`{"id":"d:b.example","kind":"domain","label":"b.example","watched":true,"campaign":"","href":"/domains/b.example"}`,
+		`{"id":"d:b.example","kind":"domain","label":"b.example","watched":true,"campaign":"","href":"/domains/b.example","source":"heimdall"}`,
 		`{"from":"d:b.example","to":"ip:192.0.2.1","kind":"A"}`,
 		`{"from":"d:z.example","to":"` + testNSSet + `","kind":"NS_SET"}`,
 	} {
@@ -261,6 +336,33 @@ func TestAPIGraphDomain(t *testing.T) {
 	}
 	if _, body := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example?depth=5", "fqdn", "www.x.example"); body != depth2 {
 		t.Errorf("depth 5 =\n%s\nwant depth 2\n%s", body, depth2)
+	}
+}
+
+func TestAPIGraphDomainVT(t *testing.T) {
+	s, f := graphTestServer(t)
+	f.vt = []ch.VTPair{vtPair("www.x.example", "198.51.100.7")}
+
+	_, body := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example?vt=1", "fqdn", "www.x.example")
+	if f.vtCalls != 0 || strings.Contains(body, `"kind":"VT"`) {
+		t.Error("vt=1 read the VirusTotal cache without VirusTotal configured")
+	}
+
+	s.vt = &vt.Enricher{}
+	if _, body := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example", "fqdn", "www.x.example"); f.vtCalls != 0 || strings.Contains(body, `"kind":"VT"`) {
+		t.Error("graph without vt=1 has VirusTotal edges")
+	}
+	_, body = serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example?vt=1", "fqdn", "www.x.example")
+	for _, want := range []string{
+		`{"id":"ip:198.51.100.7","kind":"ip","label":"198.51.100.7","watched":false,"campaign":"","href":"/rdata/198.51.100.7","source":"vt"}`,
+		`{"from":"d:www.x.example","to":"ip:198.51.100.7","kind":"VT","first_seen":"2024-01-02T00:00:00Z","last_seen":"2024-03-04T00:00:00Z"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vt graph lacks %s", want)
+		}
+	}
+	if got := strings.Join(f.vtHosts, " ") + " | " + strings.Join(f.vtIPs, " "); got != "cdn.y.example www.x.example | 192.0.2.1" {
+		t.Errorf("vt query = %s, want the names and non-CDN addresses", got)
 	}
 }
 
@@ -300,9 +402,33 @@ func TestRenderGraphPage(t *testing.T) {
 		t.Errorf("%d script tags, want 3 external ones", n)
 	}
 
+	if strings.Contains(body, "VirusTotal") {
+		t.Error("graph page offers VirusTotal without it configured")
+	}
+
 	body = renderPage(t, "graph", graphView{Title: "spynote", Back: "/campaigns/7", Source: "/graph/campaign/7/data", MaxNodes: graphMaxNodes})
 	if strings.Contains(body, "Depth") {
 		t.Error("campaign graph offers depths")
+	}
+
+	v := graphView{
+		Title: "www.x.example", Back: "/domains/www.x.example",
+		Source: "/graph/domain/www.x.example/data?depth=1&vt=1", Path: "/graph/domain/www.x.example", Depth: 1, MaxNodes: graphMaxNodes,
+	}
+	v.VT = &graphVTView{On: true, Endpoint: "/graph/domain/www.x.example/vt?depth=1", Budget: 500, Remaining: 480}
+	body = renderPage(t, "graph", v)
+	for _, want := range []string{
+		`data-source="/graph/domain/www.x.example/data?depth=1&amp;vt=1"`,
+		`<a href="/graph/domain/www.x.example?depth=2&amp;vt=1">2</a>`,
+		`<input type="checkbox" id="graph-vt-toggle" checked> VirusTotal`,
+		"VT lookups left today: 480 / 500", "seen by VirusTotal only", "VirusTotal resolution", `id="graph-vt-summary"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("vt graph page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "Enrich with VT") {
+		t.Error("Enrich with VT offered without the analyst role")
 	}
 
 	body = renderPage(t, "domain", map[string]any{"FQDN": "www.x.example", "Domain": (*pg.Domain)(nil), "Sharing": map[string]uint64{}})
