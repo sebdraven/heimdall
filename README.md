@@ -89,6 +89,59 @@ marked "CDN <provider>" in Current state, the change timeline and search,
 gets no sharing badge, and its `/rdata/` page says so. Pivots leave out the
 A/AAAA values that are CDN addresses.
 
+## VirusTotal passive DNS
+
+Optional: the graph view can add the resolutions VirusTotal saw for its
+domain and IP nodes. Nothing is sent to VirusTotal unless an analyst asks
+for it, and nothing is sent at all without a key.
+
+| Variable                   | Default | Meaning                                                        |
+|----------------------------|---------|----------------------------------------------------------------|
+| `HEIMDALL_VT_API_KEY`      | empty   | VirusTotal API v3 key; empty disables the feature, UI included |
+| `HEIMDALL_VT_DAILY_BUDGET` | `500`   | lookups per UTC day for Heimdall                               |
+| `HEIMDALL_VT_TTL`          | `168h`  | an object looked up less than this ago is not looked up again  |
+
+`POST /graph/domain/{fqdn}/vt[?depth=]` and `POST /graph/campaign/{id}/vt`
+(session, `analyst`, CSRF token, button "Enrich with VT" of the graph page)
+look up every domain and IP node of the graph, as drawn without VirusTotal:
+
+```
+GET https://www.virustotal.com/api/v3/domains/{domain}/resolutions?limit=40
+GET https://www.virustotal.com/api/v3/ip_addresses/{ip}/resolutions?limit=40
+```
+
+The `resolutions` (`host_name`, `ip_address`, `date`) go to the ClickHouse
+table `vt_resolutions`; the fetch goes to the Postgres table `vt_fetches`.
+The answer is `{"looked_up", "cached", "skipped_cdn", "skipped_reserved",
+"skipped_budget", "stopped_reason", "budget_remaining"}`, and the action is
+in the audit log as `vt.enrich`.
+
+Quota. The key is shared with other tools (300 lookups per minute, 1000 per
+day, 31K per month), so each lookup is one request and:
+
+- one page per object (`limit=40`), never the next ones;
+- at most 4 requests per second per `heimdall-api` process;
+- at most 300 lookups per enrichment;
+- at most `HEIMDALL_VT_DAILY_BUDGET` lookups per UTC day, counted in the
+  Postgres table `vt_usage` before each request, failed ones included;
+- no lookup of an object fetched within `HEIMDALL_VT_TTL` (`cached`), of a
+  CDN address (`skipped_cdn`) or of a private, shared, documentation or
+  other reserved address (`skipped_reserved`);
+- an HTTP 429 (`QuotaExceededError`, `TooManyRequestsError`) or any other
+  VirusTotal error stops the enrichment at once; the objects left count as
+  `skipped_budget` and `stopped_reason` says why. A 404 counts as no
+  resolution.
+
+The graph reads the cache only, never VirusTotal: with `?vt=1`,
+`/graph/.../data` and `/api/graph/...` add an edge `{"kind": "VT",
+"first_seen", "last_seen"}` (earliest and latest `date` of the pair) for
+each cached pair touching a domain or IP node of the graph. A name or
+address only VirusTotal saw becomes a node with `"source": "vt"` (other
+nodes have `"source": "heimdall"`). CDN addresses are left out and counted
+in `excluded_cdn`. The 500 nodes cap applies to the whole graph, Heimdall
+nodes first. The "VirusTotal" box of the graph page reloads it with
+`?vt=1`; the page shows the lookups left today.
+
 ## Quick start
 
 ```sh
@@ -115,7 +168,13 @@ collector, which writes columns they add. They are idempotent:
 docker compose exec -T clickhouse sh -c \
   'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --multiquery' \
   < deploy/clickhouse/migrations/0002_authority.sql
+docker compose exec -T clickhouse sh -c \
+  'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --multiquery' \
+  < deploy/clickhouse/migrations/0003_vt.sql
 ```
+
+`0003_vt.sql` creates `vt_resolutions`, which only `heimdall-api` uses, and
+only when VirusTotal is configured.
 
 ### ClickHouse system logs
 
@@ -232,7 +291,11 @@ takes Bearer tokens.
 plus the names outside the campaign that share a value or an NS set with at
 least two of its domains.
 
-A node is `{"id", "kind", "label", "watched", "campaign", "href"}`:
+Both take `?vt=1` for the cached VirusTotal resolutions, see VirusTotal
+passive DNS.
+
+A node is `{"id", "kind", "label", "watched", "campaign", "href",
+"source"}`:
 
 | kind     | id                  | label         | href              |
 |----------|---------------------|---------------|-------------------|
@@ -242,7 +305,7 @@ A node is `{"id", "kind", "label", "watched", "campaign", "href"}`:
 
 The nameservers of an `nsset` are sorted. `watched` and `campaign` come from
 the watchlist. An edge is `{"from", "to", "kind"}`, `kind` being `A`, `AAAA`,
-`CNAME` or `NS_SET`. Nodes and edges are unique. CDN addresses are left out
+`CNAME`, `NS_SET` or, with `first_seen` and `last_seen`, `VT`. Nodes and edges are unique. CDN addresses are left out
 and counted in `excluded_cdn`. A graph stops at 500 nodes, the domains of the
 request first, with `"truncated": true`; it is also set when a pivot query
 reaches its limit of 500 rows.
@@ -273,7 +336,8 @@ has one boolean per source. For an IP, `names` are the owners that held it
 (from at most 1000 pdns records) and `domains` the watched ones among them.
 `limit` defaults to 200, at most 200. An empty or too short `q` is a 400.
 
-Roles: `viewer` reads; `analyst` also manages domains and campaigns; `admin`
+Roles: `viewer` reads; `analyst` also manages domains and campaigns and
+runs VirusTotal enrichments; `admin`
 also manages resolvers, NS classes and CDN prefixes and reads the audit log.
 
 ## Front-end dependencies
