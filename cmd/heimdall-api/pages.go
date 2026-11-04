@@ -192,12 +192,14 @@ const (
 )
 
 // domainDetail is what /domains/{fqdn} shows. Domain is nil outside the
-// watchlist. Changes include those of the zone "zone:"+fqdn.
+// watchlist. Changes include those of the zone "zone:"+fqdn. VT is nil
+// without VirusTotal.
 type domainDetail struct {
 	Domain  *pg.Domain
 	Current []ch.Current
 	Changes []gjallarhorn.Change
 	PDNS    []ch.PDNSRecord
+	VT      *vtView
 }
 
 func (s *server) loadDomain(ctx context.Context, fqdn string, changes int) (domainDetail, error) {
@@ -222,6 +224,9 @@ func (s *server) loadDomain(ctx context.Context, fqdn string, changes int) (doma
 	dd.Changes = mergeChanges(dd.Changes, zoneChanges, changes)
 	if dd.PDNS, err = s.ch.PDNSByName(ctx, fqdn, domainPDNS); err != nil {
 		return dd, fmt.Errorf("pdns: %w", err)
+	}
+	if dd.VT, err = s.loadDomainVT(ctx, fqdn, dd.PDNS); err != nil {
+		return dd, err
 	}
 	return dd, nil
 }
@@ -251,7 +256,7 @@ func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, r, "domain", http.StatusOK, map[string]any{
 		"FQDN": fqdn, "Domain": dd.Domain, "Current": dd.Current, "Changes": dd.Changes, "PDNS": dd.PDNS, "Sharing": sharing,
-		"Zone": zone, "NSPairs": pairs,
+		"Zone": zone, "NSPairs": pairs, "VT": dd.VT,
 	})
 }
 
@@ -375,6 +380,8 @@ type rdataRow struct {
 
 const rdataLimit = 1000
 
+// rdataView is what /rdata/{value} shows. VT is set for an address when
+// VirusTotal is configured.
 type rdataView struct {
 	Value     string
 	Rows      []rdataRow
@@ -382,6 +389,7 @@ type rdataView struct {
 	Outside   int
 	Limit     int
 	Truncated bool
+	VT        *vtView
 }
 
 // buildRdataView sorts records by last seen, newest first, and attaches the
@@ -423,13 +431,34 @@ func (s *server) rdataPage(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range records {
 		names = append(names, rec.RRName)
 	}
+	var fetch pg.VTFetch
+	var pairs []ch.VTPair
+	_, ipErr := netip.ParseAddr(value)
+	withVT := s.vt != nil && ipErr == nil
+	if withVT {
+		if fetch, err = s.lastVTFetch(r.Context(), "ip:"+value); err != nil {
+			s.storeFail(w, r, err)
+			return
+		}
+		if pairs, err = s.ch.VTPairsByIP(r.Context(), value, vtPageRows); err != nil {
+			s.fail(w, r, http.StatusInternalServerError, "vt pairs", err)
+			return
+		}
+		for _, p := range pairs {
+			names = append(names, p.HostName)
+		}
+	}
 	slices.Sort(names)
 	watched, err := s.pg.DomainsByFQDN(r.Context(), slices.Compact(names))
 	if err != nil {
 		s.storeFail(w, r, err)
 		return
 	}
-	s.render(w, r, "rdata", http.StatusOK, buildRdataView(value, records, watched, rdataLimit))
+	v := buildRdataView(value, records, watched, rdataLimit)
+	if withVT {
+		v.VT = rdataVTView(fetch, pairs, watched)
+	}
+	s.render(w, r, "rdata", http.StatusOK, v)
 }
 
 const (

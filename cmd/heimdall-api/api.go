@@ -85,6 +85,7 @@ type domainDetailJSON struct {
 	Current []currentJSON `json:"current"`
 	Changes []changeJSON  `json:"changes"`
 	PDNS    []pdnsJSON    `json:"pdns"`
+	VT      *vtDetailJSON `json:"vt"`
 }
 
 // strs encodes a nil slice as [] rather than null.
@@ -123,6 +124,7 @@ func toDomainDetailJSON(dd domainDetail, cl *cdn.Classifier) domainDetailJSON {
 		Current: make([]currentJSON, 0, len(dd.Current)),
 		Changes: make([]changeJSON, 0, len(dd.Changes)),
 		PDNS:    make([]pdnsJSON, 0, len(dd.PDNS)),
+		VT:      toVTDetailJSON(dd.VT),
 	}
 	if dd.Domain != nil {
 		d := toDomainJSON(*dd.Domain)

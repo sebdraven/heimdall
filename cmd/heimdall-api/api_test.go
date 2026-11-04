@@ -50,16 +50,41 @@ func TestDomainDetailJSON(t *testing.T) {
 		`{"qtype":"A","resolver":"1.1.1.1:53","ts":"2026-03-01T12:00:00Z","rcode":"NOERROR","ttl":60,"rdata":["104.16.0.1","192.0.2.9"],"cdn":{"104.16.0.1":"Cloudflare"}}],` +
 		`"changes":[{"ts":"2026-03-01T12:01:00Z","scope":"zone","qtype":"NS","resolver":"9.9.9.9:53","prev_rcode":"NOERROR","new_rcode":"NOERROR","added":["ns1.sinkhole.example"],"removed":["ns1.x.example"],"prev_ttl":3600,"new_ttl":3600},` +
 		`{"ts":"2026-03-01T12:00:00Z","scope":"name","qtype":"A","resolver":"9.9.9.9:53","prev_rcode":"NXDOMAIN","new_rcode":"NOERROR","added":["192.0.2.1"],"removed":[],"prev_ttl":0,"new_ttl":300}],` +
-		`"pdns":[{"rrname":"www.x.example","rrtype":"A","rdata":"192.0.2.1","first_seen":"2026-03-01T12:00:00Z","last_seen":"2026-03-01T13:00:00Z","count":3}]}`
+		`"pdns":[{"rrname":"www.x.example","rrtype":"A","rdata":"192.0.2.1","first_seen":"2026-03-01T12:00:00Z","last_seen":"2026-03-01T13:00:00Z","count":3}],"vt":null}`
 	if got := encode(t, toDomainDetailJSON(dd, testCDN())); got != want {
 		t.Errorf("detail =\n%s\nwant\n%s", got, want)
 	}
 }
 
 func TestDomainDetailJSONUnwatched(t *testing.T) {
-	want := `{"domain":null,"current":[],"changes":[],"pdns":[]}`
+	want := `{"domain":null,"current":[],"changes":[],"pdns":[],"vt":null}`
 	if got := encode(t, toDomainDetailJSON(domainDetail{}, testCDN())); got != want {
 		t.Errorf("detail = %s, want %s", got, want)
+	}
+}
+
+func TestDomainDetailJSONVT(t *testing.T) {
+	cet := time.FixedZone("CET", 3600)
+	dd := domainDetail{VT: &vtView{
+		FetchedAt: t0.In(cet), Status: "ok",
+		IPs: []vtIPRow{{IP: "198.51.100.7", Period: ch.Period{First: t0.Add(-48 * time.Hour).In(cet), Last: t0.Add(-time.Hour).In(cet)}, Heimdall: true}},
+	}}
+	want := `{"domain":null,"current":[],"changes":[],"pdns":[],"vt":{"looked_up_at":"2026-03-01T12:00:00Z","status":"ok",` +
+		`"resolutions":[{"ip":"198.51.100.7","first_seen":"2026-02-27T12:00:00Z","last_seen":"2026-03-01T11:00:00Z"}]}}`
+	if got := encode(t, toDomainDetailJSON(dd, testCDN())); got != want {
+		t.Errorf("detail =\n%s\nwant\n%s", got, want)
+	}
+
+	dd.VT.IPs = nil
+	want = `{"domain":null,"current":[],"changes":[],"pdns":[],"vt":{"looked_up_at":"2026-03-01T12:00:00Z","status":"ok","resolutions":[]}}`
+	if got := encode(t, toDomainDetailJSON(dd, testCDN())); got != want {
+		t.Errorf("no resolution: %s, want %s", got, want)
+	}
+
+	// Configured, never looked up.
+	dd.VT = &vtView{}
+	if got := encode(t, toDomainDetailJSON(dd, testCDN())); !strings.HasSuffix(got, `"vt":null}`) {
+		t.Errorf("never looked up: %s, want vt null", got)
 	}
 }
 

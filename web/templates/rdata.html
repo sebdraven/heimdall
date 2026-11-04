@@ -21,4 +21,24 @@
   {{end}}
   </tbody>
 </table>
+
+{{with .Data.VT}}
+<h2>VirusTotal</h2>
+<p class="meta">{{template "vt_status" .}}</p>
+<table>
+  <thead><tr><th>Name</th><th>First seen (VT)</th><th>Last seen (VT)</th><th>Markers</th></tr></thead>
+  <tbody>
+  {{range .Names}}
+    <tr>
+      <td>{{domainLink .Name}}</td>
+      <td class="nowrap">{{ts .Period.First}}</td>
+      <td class="nowrap">{{ts .Period.Last}}</td>
+      <td>{{if .Domain}}<span class="badge">watched</span>{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4" class="empty">No VirusTotal resolution cached.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
 {{end}}

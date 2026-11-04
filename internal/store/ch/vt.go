@@ -33,6 +33,39 @@ type VTPair struct {
 	Period   Period
 }
 
+// VTPairsByHost returns the cached addresses of host, latest first.
+func (s *Store) VTPairsByHost(ctx context.Context, host string, limit int) ([]VTPair, error) {
+	return s.vtPairsWhere(ctx, `host_name = ?`, host, limit)
+}
+
+// VTPairsByIP returns the cached names of ip, latest first.
+func (s *Store) VTPairsByIP(ctx context.Context, ip string, limit int) ([]VTPair, error) {
+	return s.vtPairsWhere(ctx, `ip = ?`, ip, limit)
+}
+
+func (s *Store) vtPairsWhere(ctx context.Context, where, value string, limit int) ([]VTPair, error) {
+	rows, err := s.conn.Query(ctx, `
+		SELECT host_name, ip, min(date) AS fs, max(date) AS ls
+		FROM vt_resolutions
+		WHERE `+where+`
+		GROUP BY host_name, ip
+		ORDER BY ls DESC, host_name, ip
+		LIMIT ?`, value, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VTPair
+	for rows.Next() {
+		var p VTPair
+		if err := rows.Scan(&p.HostName, &p.IP, &p.Period.First, &p.Period.Last); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // VTPairs returns the cached VirusTotal pairs whose name is in hosts or
 // whose address is in ips.
 func (s *Store) VTPairs(ctx context.Context, hosts, ips []string, limit int) ([]VTPair, error) {

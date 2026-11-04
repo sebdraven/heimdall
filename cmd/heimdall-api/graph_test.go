@@ -388,6 +388,7 @@ func TestRenderGraphPage(t *testing.T) {
 	for _, want := range []string{
 		`<link rel="stylesheet" href="/static/vendor/pivotick/pivotick.css">`,
 		`<script src="/static/vendor/pivotick/pivotick.iife.js" defer></script>`,
+		`<script src="/static/vtjob.js" defer></script>`,
 		`<script src="/static/graph.js" defer></script>`,
 		`<script src="/static/htmx.min.js" defer></script>`,
 		`data-source="/graph/domain/www.x.example/data?depth=2"`,
@@ -398,8 +399,8 @@ func TestRenderGraphPage(t *testing.T) {
 			t.Errorf("graph page lacks %q", want)
 		}
 	}
-	if n := strings.Count(body, "<script"); n != 3 || strings.Count(body, "<script src=") != 3 {
-		t.Errorf("%d script tags, want 3 external ones", n)
+	if n := strings.Count(body, "<script"); n != 4 || strings.Count(body, "<script src=") != 4 {
+		t.Errorf("%d script tags, want 4 external ones", n)
 	}
 
 	if strings.Contains(body, "VirusTotal") {

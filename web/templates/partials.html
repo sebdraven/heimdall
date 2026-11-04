@@ -2,6 +2,8 @@
 
 {{define "cdn_marker"}}{{with cdn .}} <span class="cdn">CDN {{.}}</span>{{end}}{{end}}
 
+{{define "vt_status"}}{{if .Status}}last looked up {{ts .FetchedAt}} ({{.Status}}){{else}}not looked up yet{{end}}{{end}}
+
 {{define "events_table"}}
 <table>
   <thead>
