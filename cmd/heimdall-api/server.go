@@ -28,23 +28,25 @@ import (
 
 const maxBody = 1 << 20
 
-var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin", "graph"}
+var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin", "graph", "analytics"}
 
 type server struct {
-	cfg   *config.Config
-	log   *slog.Logger
-	pg    *pg.Store
-	ch    *ch.Store
-	auth  *auth.Manager
-	ipLim *auth.Limiter
-	usLim *auth.Limiter
-	cdn   *cdn.Classifier
-	graph graphStores
+	cfg       *config.Config
+	log       *slog.Logger
+	pg        *pg.Store
+	ch        *ch.Store
+	auth      *auth.Manager
+	ipLim     *auth.Limiter
+	usLim     *auth.Limiter
+	cdn       *cdn.Classifier
+	graph     graphStores
+	analytics analyticsStores
 	// vt is nil without HEIMDALL_VT_API_KEY.
 	vt     *vt.Enricher
 	vtJobs *vtJobs
 	audits auditStore
 	pages  map[string]*template.Template
+	now    func() time.Time
 }
 
 // auditStore writes the audit log.
@@ -85,19 +87,21 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		}
 	}
 	return &server{
-		cfg:    cfg,
-		log:    log,
-		pg:     pgs,
-		ch:     chs,
-		auth:   auth.NewManager(pgs, cfg.SessionTTL, !cfg.InsecureCookie),
-		ipLim:  auth.NewLimiter(12*time.Second, 10),
-		usLim:  auth.NewLimiter(30*time.Second, 5),
-		cdn:    cdns,
-		graph:  graphStores{chs, pgs},
-		vt:     enricher,
-		vtJobs: newVTJobs(),
-		audits: pgs,
-		pages:  pages,
+		cfg:       cfg,
+		log:       log,
+		pg:        pgs,
+		ch:        chs,
+		auth:      auth.NewManager(pgs, cfg.SessionTTL, !cfg.InsecureCookie),
+		ipLim:     auth.NewLimiter(12*time.Second, 10),
+		usLim:     auth.NewLimiter(30*time.Second, 5),
+		cdn:       cdns,
+		graph:     graphStores{chs, pgs},
+		analytics: analyticsStores{chs, pgs},
+		vt:        enricher,
+		vtJobs:    newVTJobs(),
+		audits:    pgs,
+		pages:     pages,
+		now:       time.Now,
 	}, nil
 }
 
@@ -123,6 +127,10 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /campaigns", page(analyst, s.createCampaign))
 	mux.Handle("GET /campaigns/{id}", page(viewer, s.campaignPage))
 	mux.Handle("POST /campaigns/{id}/domains", page(analyst, s.addDomains))
+	mux.Handle("GET /campaigns/{id}/analytics", page(viewer, s.analyticsPage))
+	mux.Handle("GET /campaigns/{id}/analytics/data", page(viewer, s.apiAnalytics))
+	mux.Handle("GET /entity/domain/{fqdn}", page(viewer, s.entityDomain))
+	mux.Handle("GET /entity/ip/{ip}", page(viewer, s.entityIP))
 	mux.Handle("GET /domains/{fqdn}", page(viewer, s.domainPage))
 	mux.Handle("POST /domains/{fqdn}/toggle", page(analyst, s.toggleDomain))
 	mux.Handle("DELETE /domains/{fqdn}", page(analyst, s.deleteDomain))
@@ -156,6 +164,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/campaigns", api(viewer, s.apiCampaigns))
 	mux.Handle("POST /api/campaigns", api(analyst, s.apiCreateCampaign))
 	mux.Handle("GET /api/campaigns/{id}/domains", api(viewer, s.apiCampaignDomains))
+	mux.Handle("GET /api/campaigns/{id}/analytics", api(viewer, s.apiAnalytics))
 	mux.Handle("GET /api/events", api(viewer, s.apiEvents))
 	mux.Handle("GET /api/pivots/{fqdn}", api(viewer, s.apiPivots))
 	mux.Handle("GET /api/graph/domain/{fqdn}", api(viewer, s.apiGraphDomain))
@@ -376,10 +385,11 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// backPath returns the same-origin path of the Referer, or fallback.
+// backPath returns the same-origin path of the Referer, or fallback. A path
+// with a backslash is refused: browsers read "/\x" as "//x".
 func backPath(r *http.Request, fallback string) string {
 	u, err := url.Parse(r.Referer())
-	if err != nil || u.Path == "" || !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") {
+	if err != nil || u.Path == "" || !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") || strings.Contains(u.Path, `\`) {
 		return fallback
 	}
 	if u.Host != "" && u.Host != r.Host {

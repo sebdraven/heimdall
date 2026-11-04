@@ -174,6 +174,19 @@ type eventJSON struct {
 	Detail   json.RawMessage `json:"detail"`
 }
 
+// toEventsJSON encodes an invalid detail as null.
+func toEventsJSON(events []gjallarhorn.Event) []eventJSON {
+	out := make([]eventJSON, 0, len(events))
+	for _, e := range events {
+		detail := json.RawMessage(e.Detail)
+		if !json.Valid(detail) {
+			detail = json.RawMessage("null")
+		}
+		out = append(out, eventJSON{TS: e.TS, Domain: e.Domain, Campaign: e.Campaign, Kind: e.Kind, QType: e.QType, Resolver: e.Resolver, Detail: detail})
+	}
+	return out
+}
+
 type periodJSON struct {
 	First time.Time `json:"first"`
 	Last  time.Time `json:"last"`
@@ -279,18 +292,8 @@ func toSearchJSON(v searchView) searchJSON {
 	out := searchJSON{
 		Query: v.Query, Kind: v.Kind,
 		Domains: toDomainsJSON(v.Domains),
-		Names:   make([]searchNameJSON, 0, len(v.Names)),
+		Names:   toSearchNamesJSON(v.Names),
 		Values:  make([]searchValueJSON, 0, len(v.Values)),
-	}
-	for _, n := range v.Names {
-		nj := searchNameJSON{
-			RRName: n.RRName, RRTypes: strs(n.RRTypes), FirstSeen: n.FirstSeen.UTC(), LastSeen: n.LastSeen.UTC(), Count: n.Count,
-			Watched: n.Domain != nil,
-		}
-		if n.Domain != nil {
-			nj.Campaign = n.Domain.Campaign
-		}
-		out.Names = append(out.Names, nj)
 	}
 	for _, val := range v.Values {
 		out.Values = append(out.Values, searchValueJSON{
@@ -298,6 +301,21 @@ func toSearchJSON(v searchView) searchJSON {
 		})
 	}
 	out.Truncated.Domains, out.Truncated.Names, out.Truncated.Values = v.Truncated.Domains, v.Truncated.Names, v.Truncated.Values
+	return out
+}
+
+func toSearchNamesJSON(names []nameRow) []searchNameJSON {
+	out := make([]searchNameJSON, 0, len(names))
+	for _, n := range names {
+		nj := searchNameJSON{
+			RRName: n.RRName, RRTypes: strs(n.RRTypes), FirstSeen: n.FirstSeen.UTC(), LastSeen: n.LastSeen.UTC(), Count: n.Count,
+			Watched: n.Domain != nil,
+		}
+		if n.Domain != nil {
+			nj.Campaign = n.Domain.Campaign
+		}
+		out = append(out, nj)
+	}
 	return out
 }
 
@@ -596,15 +614,7 @@ func (s *server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	out := make([]eventJSON, 0, len(events))
-	for _, e := range events {
-		detail := json.RawMessage(e.Detail)
-		if !json.Valid(detail) {
-			detail = json.RawMessage("null")
-		}
-		out = append(out, eventJSON{TS: e.TS, Domain: e.Domain, Campaign: e.Campaign, Kind: e.Kind, QType: e.QType, Resolver: e.Resolver, Detail: detail})
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, toEventsJSON(events))
 }
 
 // apiSearch follows the rules of /search without redirecting: an IP lists

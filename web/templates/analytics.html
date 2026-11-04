@@ -1,0 +1,106 @@
+{{define "title"}}{{.Data.Campaign.Name}} · Analytics · Heimdall{{end}}
+{{define "head"}}
+<link rel="stylesheet" href="/static/analytics.css">
+<script src="/static/analytics.js" defer></script>
+{{end}}
+{{define "content"}}
+{{with .Data.Campaign}}
+<div class="an" id="analytics" data-source="/campaigns/{{.ID}}/analytics/data" data-campaign="{{.ID}}" data-window="{{$.Data.Days}}" data-csrf="{{$.CSRF}}"{{if $.Can "analyst"}} data-analyst="1"{{end}}>
+  <div class="an-bar">
+    <h1>{{.Name}}</h1>
+    {{with .Family}}<span class="an-tag">{{.}}</span>{{end}}
+    <span class="an-mono" id="an-counts"></span>
+    <span class="an-dim an-mono" id="an-measured"></span>
+    <span class="an-dim an-mono" id="an-vt" hidden></span>
+    <span class="an-range" role="group" aria-label="Window">
+      <button type="button" data-days="30" aria-pressed="false">30 d</button>
+      <button type="button" data-days="90" aria-pressed="false">90 d</button>
+    </span>
+    <a href="/graph/campaign/{{.ID}}">Graph</a>
+    <a href="/campaigns/{{.ID}}">Campaign</a>
+  </div>
+  {{with .Description}}<p class="an-dim an-desc">{{.}}</p>{{end}}
+  <p class="an-error" id="an-error" role="alert" hidden></p>
+
+  <section class="an-kpis" id="an-kpis" aria-label="Indicators"></section>
+
+  <section class="an-panel" aria-labelledby="an-timeline-title">
+    <div class="an-head">
+      <h2 id="an-timeline-title">Events per day</h2>
+      <div class="an-legend" id="an-legend"></div>
+      <span class="an-dim an-mono" id="an-range-label"></span>
+      <button type="button" id="an-reset" hidden>Reset range</button>
+    </div>
+    <div class="an-timeline" id="an-timeline"></div>
+    <p class="an-dim an-hint">Drag across the chart to select a range.</p>
+  </section>
+
+  <div class="an-grid">
+    <section class="an-panel" aria-labelledby="an-matrix-title">
+      <div class="an-head">
+        <h2 id="an-matrix-title">Liveness</h2>
+        <ul class="an-states">
+          <li><span class="an-swatch s-ok"></span>resolving</li>
+          <li><span class="an-swatch s-nx"></span>NXDOMAIN</li>
+          <li><span class="an-swatch s-fail"></span>failing</li>
+          <li><span class="an-swatch s-none"></span>no observation</li>
+        </ul>
+        <label class="an-dim">Sort
+          <select id="an-sort">
+            <option value="state">current state, first seen</option>
+            <option value="ok">days resolving</option>
+          </select>
+        </label>
+      </div>
+      <div class="an-matrix" id="an-matrix" aria-label="Liveness of each domain per day"></div>
+    </section>
+
+    <section class="an-panel" aria-labelledby="an-infra-title">
+      <h2 id="an-infra-title">Infrastructure</h2>
+      <h3>Shared addresses</h3>
+      <ul class="an-list" id="an-ips"></ul>
+      <p class="an-dim" id="an-cdn"></p>
+      <h3>Shared NS sets</h3>
+      <ul class="an-list" id="an-ns"></ul>
+      <h3>New addresses</h3>
+      <div id="an-newips"></div>
+    </section>
+  </div>
+
+  <section class="an-panel" aria-labelledby="an-events-title">
+    <div class="an-head">
+      <h2 id="an-events-title">Events</h2>
+      <label class="an-dim">Kind <select id="an-ev-kind"><option value="">all</option></select></label>
+      <label class="an-dim">Filter <input type="search" id="an-ev-q" placeholder="domain or detail"></label>
+      <span class="an-dim an-mono" id="an-ev-count"></span>
+    </div>
+    <div class="an-scroll">
+      <table class="an-table" id="an-events">
+        <thead><tr><th>Time (UTC)</th><th>Kind</th><th>Domain</th><th>QType</th><th>Detail</th></tr></thead>
+        <tbody id="an-ev-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="an-panel" id="an-leads-panel" aria-labelledby="an-leads-title" hidden>
+    <h2 id="an-leads-title">VirusTotal leads</h2>
+    <p class="an-dim">Names VirusTotal saw on the campaign's addresses, outside the watchlist, from the cache only.</p>
+    <div class="an-scroll">
+      <table class="an-table" id="an-leads">
+        <thead><tr><th>Name</th><th>Shared</th><th>Addresses</th><th>Last seen</th>{{if $.Can "analyst"}}<th></th>{{end}}</tr></thead>
+        <tbody id="an-leads-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside class="an-drawer" id="an-drawer" aria-labelledby="an-drawer-title" tabindex="-1" hidden>
+    <div class="an-drawer-head">
+      <h2 class="an-mono" id="an-drawer-title"></h2>
+      <button type="button" id="an-drawer-close" aria-label="Close">×</button>
+    </div>
+    <div id="an-drawer-body"></div>
+  </aside>
+  <div class="an-tip" id="an-tip" role="tooltip" hidden></div>
+</div>
+{{end}}
+{{end}}

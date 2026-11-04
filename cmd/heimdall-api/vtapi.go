@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -48,23 +49,30 @@ func (s *server) apiVTIP(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "not an IP address")
 		return
 	}
-	ip := a.String()
-	fetch, pairs, err := s.ipVTCache(r.Context(), ip)
+	v, err := s.loadVTIP(r.Context(), a.String())
 	if err != nil {
 		s.apiStoreError(w, r, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// loadVTIP reads what VirusTotal saw on ip, from the cache only.
+func (s *server) loadVTIP(ctx context.Context, ip string) (vtIPJSON, error) {
+	fetch, pairs, err := s.ipVTCache(ctx, ip)
+	if err != nil {
+		return vtIPJSON{}, err
 	}
 	names := make([]string, 0, len(pairs))
 	for _, p := range pairs {
 		names = append(names, p.HostName)
 	}
 	slices.Sort(names)
-	watched, err := s.pg.DomainsByFQDN(r.Context(), slices.Compact(names))
+	watched, err := s.pg.DomainsByFQDN(ctx, slices.Compact(names))
 	if err != nil {
-		s.apiStoreError(w, r, err)
-		return
+		return vtIPJSON{}, err
 	}
-	writeJSON(w, http.StatusOK, toVTIPJSON(ip, rdataVTView(fetch, pairs, watched)))
+	return toVTIPJSON(ip, rdataVTView(fetch, pairs, watched)), nil
 }
 
 type vtBudgetJSON struct {

@@ -410,3 +410,25 @@ func TestMergeChanges(t *testing.T) {
 		t.Errorf("merged = %s, want %s", got, want)
 	}
 }
+
+func TestBackPath(t *testing.T) {
+	for _, tt := range []struct{ referer, want string }{
+		{"", "/fallback"},
+		{"/campaigns/7", "/campaigns/7"},
+		{"http://heimdall.test/campaigns/7/analytics?days=90", "/campaigns/7/analytics?days=90"},
+		{"http://evil.example/campaigns/7", "/fallback"},
+		{"http://heimdall.test//evil.example/x", "/fallback"},
+		{`http://heimdall.test/\evil.example`, "/fallback"},
+		{"http://heimdall.test/%5Cevil.example", "/fallback"},
+		{`/campaigns\7`, "/fallback"},
+		{"javascript:alert(1)", "/fallback"},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "http://heimdall.test/campaigns/7/domains", nil)
+		if tt.referer != "" {
+			r.Header.Set("Referer", tt.referer)
+		}
+		if got := backPath(r, "/fallback"); got != tt.want {
+			t.Errorf("backPath(%q) = %q, want %q", tt.referer, got, tt.want)
+		}
+	}
+}

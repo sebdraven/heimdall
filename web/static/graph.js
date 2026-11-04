@@ -70,7 +70,19 @@
     }));
 
     new window.Pivotick(box, { nodes, edges }, {
-      UI: { mode: 'viewer' },
+      UI: {
+        mode: 'light',
+        editors: { nodeCreator: { enabled: false }, edgeCreator: { enabled: false }, nodeEditor: { enabled: false } },
+        notes: { enabled: false },
+        simplify: {
+          rules: [
+            { kind: 'neighbours', enabled: true },
+            { kind: 'chains', enabled: false },
+            { kind: 'degree', enabled: false },
+            { kind: 'kcore', enabled: false },
+          ],
+        },
+      },
       // The IIFE build starts its worker from a blob: URL, which the CSP blocks.
       simulation: { useWorker: false },
       render: {
