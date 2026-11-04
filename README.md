@@ -258,6 +258,7 @@ DELETE /api/domains/{fqdn}
 GET    /api/campaigns
 POST   /api/campaigns               {"name", "family", "description"}
 GET    /api/campaigns/{id}/domains  same fields as GET /api/domains, 404 if unknown
+GET    /api/campaigns/{id}/analytics[?days=30|90]   analytics of a campaign, see Campaign analytics
 GET    /api/events?since=&until=&kind=&campaign=&domain=&limit=
 GET    /api/pivots/{fqdn}[?limit=]  names sharing an A/AAAA value or the whole NS set, with overlap, see below
 GET    /api/graph/domain/{fqdn}[?depth=]   graph around a name, see Graph view
@@ -338,7 +339,9 @@ apex.
 
 `/graph/domain/{fqdn}` and `/graph/campaign/{id}`, linked as "Graph" from the
 domain and campaign pages, draw the infrastructure with Pivotick. Clicking a
-node opens its page. The browser reads the graph from
+node opens its page. The graph opens simplified: nodes with the same
+neighbours are grouped into one, which the Simplify panel of the side rail
+turns off or combines with its other rules. The browser reads the graph from
 `/graph/domain/{fqdn}/data` and `/graph/campaign/{id}/data`, which return the
 same JSON as `/api/graph/...` under the session cookie, since `/api` only
 takes Bearer tokens.
@@ -374,6 +377,75 @@ the watchlist. An edge is `{"from", "to", "kind"}`, `kind` being `A`, `AAAA`,
 and counted in `excluded_cdn`. A graph stops at 500 nodes, the domains of the
 request first, with `"truncated": true`; it is also set when a pivot query
 reaches its limit of 500 rows.
+
+## Campaign analytics
+
+`/campaigns/{id}/analytics`, linked as "Analytics" from the campaign page,
+is a dense workspace over the last 30 or 90 days (`?days=`, 30 unless
+90): indicator tiles with a daily sparkline, a stacked timeline of events by
+kind (click a kind in the legend to hide it, drag across the chart to select
+a range), a liveness matrix of every domain per day, shared addresses and NS
+sets, the latest events and, with VirusTotal, leads from its cache. A range
+selected on the timeline filters the events and new addresses and dims the
+matrix columns outside it. Hovering a shared address or NS set highlights its
+domains in the matrix; clicking a domain, an address or a zone opens a side
+panel (Escape closes it). The matrix renders only its visible rows past 300
+domains. The page draws SVG from JSON with `web/static/analytics.js` and
+`web/static/analytics.css`, under the same CSP as the other pages.
+
+The browser reads `/campaigns/{id}/analytics/data?days=` (session, `viewer`),
+which returns the same JSON as `/api/campaigns/{id}/analytics?days=` (Bearer,
+`viewer`), 404 for an unknown campaign. Each ClickHouse query is bounded by
+the window and the campaign's domains, about ten queries in all. Days are UTC
+dates, `YYYY-MM-DD`, oldest first.
+
+- `days`: 30 or 90.
+- `header`: `{"campaign": {"id", "name", "family", "description"},
+  "domains", "enabled", "last_measured_at", "vt"}`; `last_measured_at` is
+  the latest A/AAAA observation of the window, `vt` is `{"budget",
+  "used_today", "remaining"}`, `null` without a VirusTotal key.
+- `kpis`: `resolving`, `nxdomain`, `failing`, `unmeasured` (domains in each
+  liveness state), `active_ips` (distinct non-CDN addresses answered),
+  `cdn_share` (share of CDN addresses among those answered, 0 to 1),
+  `ns_sets` (distinct current NS sets of at least 2 nameservers among the
+  zones of the campaign, counted on the days their period covers) and
+  `events_7d` (events of the last 7 days), each `{"value", "series"}`: one
+  value per day of the window, `value` being that of today.
+- `timeline`: `{"kinds", "days": [{"day", "counts": {"<kind>": n}}]}`.
+- `liveness`: `{"days", "rows": [{"fqdn", "enabled", "first_seen",
+  "cells"}]}`, one cell per day: the last A or AAAA observation of the domain
+  that day, answers without data aside, gives `ok` (NOERROR), `nx`
+  (NXDOMAIN), `fail` (TIMEOUT, SERVFAIL, REFUSED, NETERR or another error)
+  or `none` (no observation). Rows are sorted by today's state (`ok`,
+  `fail`, `nx`, `none`), then `first_seen`, the first passive DNS record of
+  the name, `null` if none.
+- `clusters`: `{"ips", "ns_sets", "new_ips_per_day", "excluded_cdn"}`.
+  `ips` are the addresses answered for at least two domains in the window,
+  `{"ip", "domains", "first_seen", "last_seen"}` (days), most shared first,
+  at most 30. `ns_sets` are the current NS sets (at least 2 nameservers)
+  held by at least two zones of the campaign, `{"ns", "zones", "domains"}`.
+  `new_ips_per_day` lists for each day `{"day", "ips"}` the addresses of the
+  window first seen in passive DNS that day, under any owner. CDN addresses
+  are left out of all of them and of `active_ips`, and counted in
+  `excluded_cdn`.
+- `events`: the 200 latest events of the window tagged with the campaign or
+  about one of its domains, as in `/api/events`.
+- `vt_leads`: the names VirusTotal saw on the campaign's non-CDN addresses
+  that are not in the watchlist, `{"host_name", "ips", "last_seen"}`, most
+  shared addresses then most recent first, at most 50, from the cache only;
+  `null` without a VirusTotal key. An `analyst` adds one to the campaign
+  with "Add to campaign" (`POST /campaigns/{id}/domains`, which now returns
+  to the page it was posted from).
+
+The side panel reads `/entity/domain/{fqdn}` (session, `viewer`):
+`{"fqdn", "domain", "first_seen", "last_seen", "current", "events", "vt",
+"href", "graph"}`, with `domain`, `current` and `vt` as in
+`/api/domains/{fqdn}/detail`, the first and last passive DNS sighting of
+the name and its 20 latest events of the last 90 days; and
+`/entity/ip/{ip}`: `{"ip", "cdn", "names", "truncated", "vt", "href"}`,
+`names` being the passive DNS owners of the address as in `/api/search`,
+`vt` as `/api/vt/ip/{ip}` (`null` without a VirusTotal key), 400 if `{ip}`
+is not an IP address.
 
 ## Search
 
@@ -435,7 +507,8 @@ To update one of them:
    files at the paths above.
 3. Update the version and sha256 in this table.
 4. For Pivotick, check the type definitions of the release for renamed
-   options or callbacks used by `graph.js` (`UI.mode`, `simulation.useWorker`,
+   options or callbacks used by `graph.js` (`UI.mode`, `UI.editors`,
+   `UI.notes`, `UI.simplify.rules`, `simulation.useWorker`,
    `render.nodeTypeAccessor`, `render.nodeStyleMap`, `render.defaultNodeStyle`
    with `textTruncate`, `render.edgeTypeAccessor`, `render.edgeStyleMap` with
    `dashed`, `animateDash` and `strokeColor`, `callbacks.onNodeClick`), and

@@ -164,7 +164,7 @@ func (s *server) addDomains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "domain.import", fmt.Sprintf("%s (%d new of %d)", c.Name, n, len(fqdns)))
-	http.Redirect(w, r, fmt.Sprintf("/campaigns/%d", c.ID), http.StatusSeeOther)
+	http.Redirect(w, r, backPath(r, fmt.Sprintf("/campaigns/%d", c.ID)), http.StatusSeeOther)
 }
 
 // parseFQDNList accepts one FQDN per line; '#' starts a comment.
