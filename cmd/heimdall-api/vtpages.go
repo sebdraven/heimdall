@@ -91,9 +91,32 @@ func (s *server) loadDomainVT(ctx context.Context, fqdn string, pdns []ch.PDNSRe
 	return v, nil
 }
 
+// ipVTCache reads the last lookup of ip and the names VirusTotal saw on it.
+func (s *server) ipVTCache(ctx context.Context, ip string) (pg.VTFetch, []ch.VTPair, error) {
+	f, err := s.lastVTFetch(ctx, "ip:"+ip)
+	if err != nil {
+		return f, nil, err
+	}
+	pairs, err := s.ch.VTPairsByIP(ctx, ip, vtPageRows)
+	if err != nil {
+		return f, nil, fmt.Errorf("vt pairs: %w", err)
+	}
+	return f, pairs, nil
+}
+
+// lookedUp returns the time and status of the last lookup, nil if there was
+// none.
+func lookedUp(v *vtView) (*time.Time, *string) {
+	if v.Status == "" {
+		return nil, nil
+	}
+	at, status := v.FetchedAt.UTC(), v.Status
+	return &at, &status
+}
+
 type vtDetailJSON struct {
-	LookedUpAt  time.Time          `json:"looked_up_at"`
-	Status      string             `json:"status"`
+	LookedUpAt  *time.Time         `json:"looked_up_at"`
+	Status      *string            `json:"status"`
 	Resolutions []vtResolutionJSON `json:"resolutions"`
 }
 
@@ -103,13 +126,14 @@ type vtResolutionJSON struct {
 	LastSeen  time.Time `json:"last_seen"`
 }
 
-// toVTDetailJSON is nil without VirusTotal or when the domain was never
-// looked up.
+// toVTDetailJSON is nil without VirusTotal. A domain never looked up has the
+// resolutions cached by the lookups of its addresses.
 func toVTDetailJSON(v *vtView) *vtDetailJSON {
-	if v == nil || v.Status == "" {
+	if v == nil {
 		return nil
 	}
-	out := &vtDetailJSON{LookedUpAt: v.FetchedAt.UTC(), Status: v.Status, Resolutions: make([]vtResolutionJSON, 0, len(v.IPs))}
+	out := &vtDetailJSON{Resolutions: make([]vtResolutionJSON, 0, len(v.IPs))}
+	out.LookedUpAt, out.Status = lookedUp(v)
 	for _, r := range v.IPs {
 		out.Resolutions = append(out.Resolutions, vtResolutionJSON{IP: r.IP, FirstSeen: r.Period.First.UTC(), LastSeen: r.Period.Last.UTC()})
 	}

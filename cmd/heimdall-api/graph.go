@@ -544,9 +544,9 @@ func (s *server) graphCampaignPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "graph", http.StatusOK, v)
 }
 
-// enrichGraphDomain serves POST /graph/domain/{fqdn}/vt?depth=: starts
-// looking up with VirusTotal the domain and IP nodes of the graph without
-// VirusTotal.
+// enrichGraphDomain serves POST /graph/domain/{fqdn}/vt?depth= and POST
+// /api/vt/enrich/domain/{fqdn}?depth=: starts looking up with VirusTotal the
+// domain and IP nodes of the graph without VirusTotal.
 func (s *server) enrichGraphDomain(w http.ResponseWriter, r *http.Request) {
 	if s.vt == nil {
 		apiError(w, http.StatusNotFound, "not found")
@@ -560,7 +560,8 @@ func (s *server) enrichGraphDomain(w http.ResponseWriter, r *http.Request) {
 	s.startEnrich(w, r, g, domainTarget(fqdn), "domain "+fqdn)
 }
 
-// enrichGraphCampaign serves POST /graph/campaign/{id}/vt.
+// enrichGraphCampaign serves POST /graph/campaign/{id}/vt and POST
+// /api/vt/enrich/campaign/{id}.
 func (s *server) enrichGraphCampaign(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if s.vt == nil || !ok {
@@ -616,8 +617,9 @@ func stopNote(reason string) string {
 	return ", stopped: " + reason
 }
 
-// vtJobDomain serves GET /graph/domain/{fqdn}/vt: the state of the
-// enrichment of the domain, or {"state": "none"}.
+// vtJobDomain serves GET /graph/domain/{fqdn}/vt and GET
+// /api/vt/enrich/domain/{fqdn}: the state of the enrichment of the domain,
+// or {"state": "none"}.
 func (s *server) vtJobDomain(w http.ResponseWriter, r *http.Request) {
 	if s.vt == nil {
 		apiError(w, http.StatusNotFound, "not found")
@@ -626,7 +628,8 @@ func (s *server) vtJobDomain(w http.ResponseWriter, r *http.Request) {
 	s.writeVTJob(w, domainTarget(resolver.Name(r.PathValue("fqdn"))))
 }
 
-// vtJobCampaign serves GET /graph/campaign/{id}/vt.
+// vtJobCampaign serves GET /graph/campaign/{id}/vt and GET
+// /api/vt/enrich/campaign/{id}.
 func (s *server) vtJobCampaign(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if s.vt == nil || !ok {
