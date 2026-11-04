@@ -12,7 +12,7 @@
   {{with .Data.VT}}
   <label class="meta"><input type="checkbox" id="graph-vt-toggle"{{if .On}} checked{{end}}> VirusTotal</label>
   <span class="meta">VT lookups left today: {{if ge .Remaining 0}}{{.Remaining}}{{else}}?{{end}} / {{.Budget}}</span>
-  {{if $.Can "analyst"}}<button type="button" id="graph-vt-enrich" data-endpoint="{{.Endpoint}}" data-csrf="{{$.CSRF}}">Enrich with VT</button>{{end}}
+  {{if $.Can "analyst"}}<button type="button" id="graph-vt-enrich" data-csrf="{{$.CSRF}}">Enrich with VT</button>{{end}}
   {{end}}
   <ul class="legend">
     <li><span class="swatch swatch-domain-watched"></span>domain watched</li>
@@ -26,7 +26,7 @@
   </ul>
   <p class="notice" id="graph-cdn" hidden><span id="graph-cdn-count"></span> CDN addresses left out</p>
   <p class="notice" id="graph-truncated" hidden>truncated at {{.Data.MaxNodes}} nodes</p>
-  <p class="notice" id="graph-vt-summary" hidden></p>
+  <p class="notice" id="graph-vt-summary"{{with .Data.VT}} data-endpoint="{{.Endpoint}}"{{end}} hidden></p>
   <p class="error" id="graph-error" hidden></p>
 </div>
 <div id="graph" class="graph-canvas" data-source="{{.Data.Source}}"></div>

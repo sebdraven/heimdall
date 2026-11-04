@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -16,7 +17,6 @@ import (
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
-	"github.com/sebdraven/heimdall/internal/vt"
 )
 
 const (
@@ -544,13 +544,9 @@ func (s *server) graphCampaignPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "graph", http.StatusOK, v)
 }
 
-type vtEnrichJSON struct {
-	vt.Summary
-	BudgetRemaining int `json:"budget_remaining"`
-}
-
-// enrichGraphDomain serves POST /graph/domain/{fqdn}/vt?depth=: looks up
-// with VirusTotal the domain and IP nodes of the graph without VirusTotal.
+// enrichGraphDomain serves POST /graph/domain/{fqdn}/vt?depth=: starts
+// looking up with VirusTotal the domain and IP nodes of the graph without
+// VirusTotal.
 func (s *server) enrichGraphDomain(w http.ResponseWriter, r *http.Request) {
 	if s.vt == nil {
 		apiError(w, http.StatusNotFound, "not found")
@@ -561,7 +557,7 @@ func (s *server) enrichGraphDomain(w http.ResponseWriter, r *http.Request) {
 		s.apiStoreError(w, r, err)
 		return
 	}
-	s.enrichGraph(w, r, g, "domain "+fqdn)
+	s.startEnrich(w, r, g, domainTarget(fqdn), "domain "+fqdn)
 }
 
 // enrichGraphCampaign serves POST /graph/campaign/{id}/vt.
@@ -576,31 +572,41 @@ func (s *server) enrichGraphCampaign(w http.ResponseWriter, r *http.Request) {
 		s.apiStoreError(w, r, err)
 		return
 	}
-	s.enrichGraph(w, r, g, "campaign "+name)
+	s.startEnrich(w, r, g, campaignTarget(id), "campaign "+name)
 }
 
-func (s *server) enrichGraph(w http.ResponseWriter, r *http.Request, g graphJSON, target string) {
-	var objects []string
-	for _, n := range g.Nodes {
-		if n.Kind == nodeDomain || n.Kind == nodeIP {
-			objects = append(objects, n.ID)
+// startEnrich enriches g in the background unless an enrichment of target
+// is running, and answers 202 with the state of the target's job.
+func (s *server) startEnrich(w http.ResponseWriter, r *http.Request, g graphJSON, target, label string) {
+	job, started := s.vtJobs.begin(target)
+	if started {
+		var objects []string
+		for _, n := range g.Nodes {
+			if n.Kind == nodeDomain || n.Kind == nodeIP {
+				objects = append(objects, n.ID)
+			}
+		}
+		// The job outlives the request, which a proxy may cut.
+		go s.runEnrich(context.WithoutCancel(r.Context()), target, label, objects)
+	}
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *server) runEnrich(base context.Context, target, label string, objects []string) {
+	ctx, cancel := context.WithTimeout(base, vtJobTimeout)
+	defer cancel()
+	sum, err := s.vt.Enrich(ctx, objects)
+	note, errMsg := stopNote(sum.StoppedReason), ""
+	if err != nil {
+		s.log.Error("vt enrich", "target", label, "err", err)
+		note, errMsg = ", failed", "internal error"
+		if errors.Is(err, context.DeadlineExceeded) {
+			errMsg = "timed out after " + vtJobTimeout.String()
 		}
 	}
-	sum, err := s.vt.Enrich(r.Context(), objects)
-	s.audit(r, "vt.enrich", fmt.Sprintf("%s (looked up %d, cached %d, skipped for budget %d%s)",
-		target, sum.LookedUp, sum.Cached, sum.SkippedBudget, stopNote(sum.StoppedReason)))
-	if err != nil {
-		s.log.Error("vt enrich", "target", target, "err", err)
-		apiError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	out := vtEnrichJSON{Summary: sum, BudgetRemaining: -1}
-	if n, err := s.vt.Remaining(r.Context()); err != nil {
-		s.log.Warn("vt usage", "err", err)
-	} else {
-		out.BudgetRemaining = n
-	}
-	writeJSON(w, http.StatusOK, out)
+	s.auditCtx(base, "vt.enrich", fmt.Sprintf("%s (looked up %d, cached %d, skipped for budget %d%s)",
+		label, sum.LookedUp, sum.Cached, sum.SkippedBudget, note))
+	s.vtJobs.finish(target, sum, errMsg)
 }
 
 func stopNote(reason string) string {
@@ -608,4 +614,32 @@ func stopNote(reason string) string {
 		return ""
 	}
 	return ", stopped: " + reason
+}
+
+// vtJobDomain serves GET /graph/domain/{fqdn}/vt: the state of the
+// enrichment of the domain, or {"state": "none"}.
+func (s *server) vtJobDomain(w http.ResponseWriter, r *http.Request) {
+	if s.vt == nil {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	s.writeVTJob(w, domainTarget(resolver.Name(r.PathValue("fqdn"))))
+}
+
+// vtJobCampaign serves GET /graph/campaign/{id}/vt.
+func (s *server) vtJobCampaign(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if s.vt == nil || !ok {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	s.writeVTJob(w, campaignTarget(id))
+}
+
+func (s *server) writeVTJob(w http.ResponseWriter, target string) {
+	job, ok := s.vtJobs.get(target)
+	if !ok {
+		job = vtJob{State: vtNone}
+	}
+	writeJSON(w, http.StatusOK, job)
 }
