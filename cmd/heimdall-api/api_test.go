@@ -81,10 +81,22 @@ func TestDomainDetailJSONVT(t *testing.T) {
 		t.Errorf("no resolution: %s, want %s", got, want)
 	}
 
-	// Configured, never looked up.
+	// Never looked up: the cache still has what the lookups of its addresses saw.
+	dd.VT = &vtView{IPs: []vtIPRow{{IP: "198.51.100.7", Period: ch.Period{First: t0.Add(-48 * time.Hour), Last: t0.Add(-time.Hour)}}}}
+	want = `{"domain":null,"current":[],"changes":[],"pdns":[],"vt":{"looked_up_at":null,"status":null,` +
+		`"resolutions":[{"ip":"198.51.100.7","first_seen":"2026-02-27T12:00:00Z","last_seen":"2026-03-01T11:00:00Z"}]}}`
+	if got := encode(t, toDomainDetailJSON(dd, testCDN())); got != want {
+		t.Errorf("never looked up:\n%s\nwant\n%s", got, want)
+	}
+
 	dd.VT = &vtView{}
+	if got := encode(t, toDomainDetailJSON(dd, testCDN())); !strings.HasSuffix(got, `"vt":{"looked_up_at":null,"status":null,"resolutions":[]}}`) {
+		t.Errorf("never looked up, empty cache: %s", got)
+	}
+
+	dd.VT = nil
 	if got := encode(t, toDomainDetailJSON(dd, testCDN())); !strings.HasSuffix(got, `"vt":null}`) {
-		t.Errorf("never looked up: %s, want vt null", got)
+		t.Errorf("without VirusTotal: %s, want vt null", got)
 	}
 }
 

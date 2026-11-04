@@ -118,7 +118,9 @@ depend on the request: the POST answers `202 {"job", "state": "running",
 "started_at"}` at once. One enrichment runs at a time per domain or
 campaign; a POST while one runs answers its state and starts nothing.
 `GET` on the same path (session, `viewer`) answers the state of the last
-enrichment, or `{"state": "none"}`:
+enrichment, or `{"state": "none"}`. `/api/vt/enrich/...` does the same
+under a bearer token (see API) and shares the jobs: a POST there while the
+graph page enriches the same target answers that job.
 
 - `running`;
 - `done`, with `finished_at` and `{"looked_up", "cached", "skipped_cdn",
@@ -261,6 +263,12 @@ GET    /api/pivots/{fqdn}[?limit=]  names sharing an A/AAAA value or the whole N
 GET    /api/graph/domain/{fqdn}[?depth=]   graph around a name, see Graph view
 GET    /api/graph/campaign/{id}     graph of a campaign, 404 if unknown, see Graph view
 GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
+GET    /api/vt/ip/{ip}              names VirusTotal saw on an address, cache only, see below
+GET    /api/vt/budget               VirusTotal lookups of the UTC day
+POST   /api/vt/enrich/domain/{fqdn}[?depth=]   analyst, enrichment job, see VirusTotal passive DNS
+GET    /api/vt/enrich/domain/{fqdn} state of the job
+POST   /api/vt/enrich/campaign/{id} analyst, enrichment job, 404 if unknown
+GET    /api/vt/enrich/campaign/{id} state of the job
 GET    /healthz                     no auth
 ```
 
@@ -275,8 +283,28 @@ cached VirusTotal resolutions. Dates are RFC 3339 UTC.
 
 `vt` is `{"looked_up_at", "status", "resolutions": [{"ip", "first_seen",
 "last_seen"}]}`, from the cache only, latest first, at most 500 addresses.
-`status` is `ok`, `empty` or `error`. `vt` is `null` without a VirusTotal
-key or when the name was never looked up.
+`status` is `ok`, `empty` or `error`. `looked_up_at` and `status` are
+`null` when the name was never looked up itself; `resolutions` then holds
+what the lookups of its addresses cached, as the page shows. `vt` is `null`
+only without a VirusTotal key.
+
+The `/api/vt/*` routes answer 404 without a VirusTotal key.
+
+`/api/vt/ip/{ip}` returns `{"ip", "looked_up_at", "status", "names":
+[{"host_name", "first_seen", "last_seen", "watched", "campaign"}]}`, what
+`/rdata/{ip}` shows: the last lookup of `ip:{ip}` (`null` if none) and the
+names VirusTotal saw on the address, latest first, at most 500, from the
+cache only. `campaign` is that of the watched name, `""` otherwise. 400 if
+`{ip}` is not an IP address.
+
+`/api/vt/budget` returns `{"budget", "used_today", "remaining"}`:
+`HEIMDALL_VT_DAILY_BUDGET`, the lookups counted in `vt_usage` for the
+current UTC day and those left.
+
+`POST /api/vt/enrich/domain/{fqdn}[?depth=]` and `POST
+/api/vt/enrich/campaign/{id}` (`analyst`) start the enrichment of
+`POST /graph/.../vt` and answer `202` with the state of the job; `GET`
+(`viewer`) answers that state, or `{"state": "none"}`.
 
 `changes` merges, newest first and within the same `limit`, the changes of
 the name and those of its zone `zone:{fqdn}`, as the page does. Each carries

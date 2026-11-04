@@ -436,12 +436,8 @@ func (s *server) rdataPage(w http.ResponseWriter, r *http.Request) {
 	_, ipErr := netip.ParseAddr(value)
 	withVT := s.vt != nil && ipErr == nil
 	if withVT {
-		if fetch, err = s.lastVTFetch(r.Context(), "ip:"+value); err != nil {
+		if fetch, pairs, err = s.ipVTCache(r.Context(), value); err != nil {
 			s.storeFail(w, r, err)
-			return
-		}
-		if pairs, err = s.ch.VTPairsByIP(r.Context(), value, vtPageRows); err != nil {
-			s.fail(w, r, http.StatusInternalServerError, "vt pairs", err)
 			return
 		}
 		for _, p := range pairs {

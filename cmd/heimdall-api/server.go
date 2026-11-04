@@ -161,6 +161,12 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/graph/domain/{fqdn}", api(viewer, s.apiGraphDomain))
 	mux.Handle("GET /api/graph/campaign/{id}", api(viewer, s.apiGraphCampaign))
 	mux.Handle("GET /api/search", api(viewer, s.apiSearch))
+	mux.Handle("GET /api/vt/ip/{ip}", api(viewer, s.apiVTIP))
+	mux.Handle("GET /api/vt/budget", api(viewer, s.apiVTBudget))
+	mux.Handle("POST /api/vt/enrich/domain/{fqdn}", api(analyst, s.enrichGraphDomain))
+	mux.Handle("GET /api/vt/enrich/domain/{fqdn}", api(viewer, s.vtJobDomain))
+	mux.Handle("POST /api/vt/enrich/campaign/{id}", api(analyst, s.enrichGraphCampaign))
+	mux.Handle("GET /api/vt/enrich/campaign/{id}", api(viewer, s.vtJobCampaign))
 
 	return s.middleware(mux)
 }

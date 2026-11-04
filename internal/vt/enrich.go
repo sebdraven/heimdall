@@ -71,13 +71,19 @@ type Summary struct {
 	StoppedReason   string `json:"stopped_reason"`
 }
 
+// Usage returns the lookups counted today and those left.
+func (e *Enricher) Usage(ctx context.Context) (used, remaining int, err error) {
+	used, err = e.Ledger.VTUsageToday(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	return used, max(e.Budget-used, 0), nil
+}
+
 // Remaining returns the lookups left today.
 func (e *Enricher) Remaining(ctx context.Context) (int, error) {
-	n, err := e.Ledger.VTUsageToday(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return max(e.Budget-n, 0), nil
+	_, n, err := e.Usage(ctx)
+	return n, err
 }
 
 func (e *Enricher) now() time.Time {
