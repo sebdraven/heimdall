@@ -34,6 +34,10 @@ type Config struct {
 	SessionTTL     time.Duration
 	Migrate        bool
 
+	VTAPIKey      string
+	VTDailyBudget int
+	VTTTL         time.Duration
+
 	LogLevel slog.Level
 }
 
@@ -61,6 +65,10 @@ func Load() (*Config, error) {
 		SessionTTL:     p.duration("SESSION_TTL", 12*time.Hour),
 		Migrate:        p.bool("MIGRATE", true),
 
+		VTAPIKey:      p.str("VT_API_KEY", ""),
+		VTDailyBudget: p.int("VT_DAILY_BUDGET", 500),
+		VTTTL:         p.duration("VT_TTL", 168*time.Hour),
+
 		LogLevel: p.level("LOG_LEVEL", slog.LevelInfo),
 	}
 	if c.PGDSN == "" {
@@ -75,6 +83,8 @@ func Load() (*Config, error) {
 	p.positive("DNS_TIMEOUT", int(c.DNSTimeout))
 	p.positive("BATCH_FLUSH", int(c.BatchFlush))
 	p.positive("SESSION_TTL", int(c.SessionTTL))
+	p.positive("VT_DAILY_BUDGET", c.VTDailyBudget)
+	p.positive("VT_TTL", int(c.VTTTL))
 	if err := errors.Join(p.errs...); err != nil {
 		return nil, err
 	}
