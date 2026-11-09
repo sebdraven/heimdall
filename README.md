@@ -287,6 +287,7 @@ GET    /api/pivots/{fqdn}[?limit=]  names sharing an A/AAAA value or the whole N
 GET    /api/graph/domain/{fqdn}[?depth=]   graph around a name, see Graph view
 GET    /api/graph/campaign/{id}     graph of a campaign, 404 if unknown, see Graph view
 GET    /api/graph/ip/{ip}           graph of an address, 400 if not one, see Graph view
+GET    /api/graph/ns/{set}          domains with exactly this NS set (comma-separated), see Graph view
 GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
 GET    /api/vt/ip/{ip}              names VirusTotal saw on an address, cache only, see below
 GET    /api/vt/budget               VirusTotal lookups of the UTC day
@@ -371,10 +372,12 @@ domain or IP node expands it in place: the page reads its graph
 (`/graph/domain/{fqdn}/data`, depth 1, or `/graph/ip/{ip}/data`, with
 `?vt=1` when the page shows VirusTotal or the node was enriched from its
 menu) and adds the nodes and edges it lacks around the node, at most 50 new
-nodes ("+N not shown" beyond, "no neighbours" when nothing is new). An
-expanded node gets a thicker border and is not read again. Other nodes do
-nothing on click. The context menu (right click) of a domain or IP node has
-"Open page" (`/domains/{fqdn}` or `/rdata/{ip}`). The graph opens
+nodes ("+N not shown" beyond, "no neighbours" when nothing is new). Clicking
+an NS set node expands it the same way with the domains whose current NS
+set is identical (`/graph/ns/{set}/data`). An expanded node gets a thicker
+border and is not read again. Other nodes do nothing on click. The context
+menu (right click) of a domain or IP node has "Open page" (`/domains/{fqdn}`
+or `/rdata/{ip}`). The graph opens
 simplified: nodes with the same neighbours are grouped into one, which the
 Simplify panel of the side rail turns off or combines with its other rules.
 The browser reads the graph from `/graph/domain/{fqdn}/data` and
@@ -403,8 +406,17 @@ records read). 400 if `{ip}` is not an address. A CDN address is not
 drawn: the page says "CDN address" and the JSON is empty with
 `"excluded_cdn": 1`. Its "Enrich with VT" enriches the address at depth 2.
 
-All take `?vt=1` for the cached VirusTotal resolutions, see VirusTotal
-passive DNS; on an IP graph, the names VirusTotal saw on the address.
+`/api/graph/ns/{set}` (`/graph/ns/{set}/data` under the session cookie)
+centres on an NS set: `{set}` is its nameservers separated by commas, as in
+the id of an `nsset` node after `ns:`, read lowercased, without a final dot,
+sorted and unique. 400 `invalid NS set` unless it holds 2 to 16 valid names.
+The graph holds the `nsset` node (`href` empty), then the names whose current
+NS set (NS records seen in the last 7 days) is exactly that one, each with an
+`NS_SET` edge to it, at most 500 names read (`"truncated": true` at 500).
+
+All but the NS set graph take `?vt=1` for the cached VirusTotal resolutions,
+see VirusTotal passive DNS; on an IP graph, the names VirusTotal saw on the
+address.
 
 A node is `{"id", "kind", "label", "watched", "campaign", "href",
 "source"}`:
