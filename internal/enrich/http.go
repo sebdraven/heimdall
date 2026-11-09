@@ -10,11 +10,27 @@ import (
 
 const userAgent = "heimdall"
 
+// statusError is an answer other than 200.
+type statusError struct {
+	Code       int
+	RetryAfter string
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
+
 // getJSON decodes into v the answer to a GET of url, read up to limit bytes.
 func getJSON(ctx context.Context, hc *http.Client, url, accept string, limit int64, v any) error {
+	return fetchJSON(ctx, hc, url, accept, nil, limit, v)
+}
+
+// fetchJSON is getJSON with the request headers of header.
+func fetchJSON(ctx context.Context, hc *http.Client, url, accept string, header http.Header, limit int64, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
+	}
+	for k, vs := range header {
+		req.Header[k] = vs
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", accept)
@@ -24,7 +40,7 @@ func getJSON(ctx context.Context, hc *http.Client, url, accept string, limit int
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", res.StatusCode)
+		return &statusError{Code: res.StatusCode, RetryAfter: res.Header.Get("Retry-After")}
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, limit)).Decode(v); err != nil {
 		return fmt.Errorf("decode: %w", err)
