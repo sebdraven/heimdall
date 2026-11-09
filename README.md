@@ -191,10 +191,13 @@ to `/rdata/{ip}/vt`, follows the job and reloads the page at the end. Opened
 during an enrichment of the address, the page follows it too.
 
 In every graph page, the context menu of an IP node (right click) has "Open
-IP graph" and, with a key and the `analyst` role, "Enrich with VT": it posts
-to `/rdata/{ip}/vt?depth=1`, shows the state of the job in the graph bar and
-reloads the graph with `?vt=1` at the end. `web/static/vtjob.js` follows the
-enrichment on the graph, domain and rdata pages.
+IP graph" and, for an IP or domain node, with a key and the `analyst` role,
+"Enrich with VT": it posts to `/rdata/{ip}/vt?depth=1`, or for a domain to
+`/graph/domain/{fqdn}/vt?depth=1` as the domain page does, and shows the
+state of the job in the graph bar. The graph is not reloaded: once the job
+has finished, the next click on the node expands it again with its cached
+VirusTotal resolutions. `web/static/vtjob.js` follows the enrichment on the
+graph, domain and rdata pages.
 
 ## Quick start
 
@@ -364,10 +367,18 @@ apex.
 
 `/graph/domain/{fqdn}` and `/graph/campaign/{id}`, linked as "Graph" from the
 domain and campaign pages, draw the infrastructure with Pivotick. Clicking a
-node opens its page. The graph opens simplified: nodes with the same
-neighbours are grouped into one, which the Simplify panel of the side rail
-turns off or combines with its other rules. The browser reads the graph from
-`/graph/domain/{fqdn}/data` and `/graph/campaign/{id}/data`, which return the
+domain or IP node expands it in place: the page reads its graph
+(`/graph/domain/{fqdn}/data`, depth 1, or `/graph/ip/{ip}/data`, with
+`?vt=1` when the page shows VirusTotal or the node was enriched from its
+menu) and adds the nodes and edges it lacks around the node, at most 50 new
+nodes ("+N not shown" beyond, "no neighbours" when nothing is new). An
+expanded node gets a thicker border and is not read again. Other nodes do
+nothing on click. The context menu (right click) of a domain or IP node has
+"Open page" (`/domains/{fqdn}` or `/rdata/{ip}`). The graph opens
+simplified: nodes with the same neighbours are grouped into one, which the
+Simplify panel of the side rail turns off or combines with its other rules.
+The browser reads the graph from `/graph/domain/{fqdn}/data` and
+`/graph/campaign/{id}/data`, which return the
 same JSON as `/api/graph/...` under the session cookie, since `/api` only
 takes Bearer tokens.
 
