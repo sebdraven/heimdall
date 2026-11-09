@@ -61,6 +61,7 @@
       source: n.source,
       ip: n.kind === 'ip' ? n.id.slice('ip:'.length) : '',
       fqdn: n.kind === 'domain' ? n.id.slice('d:'.length) : '',
+      nsset: n.kind === 'nsset' ? n.id.slice('ns:'.length) : '',
     },
   });
 
@@ -107,6 +108,8 @@
   };
 
   const expandURL = (node) => {
+    const nsset = dataOf(node).nsset;
+    if (nsset) return `/graph/ns/${encodeURIComponent(nsset)}/data`;
     let path = '';
     if (ipOf(node)) path = `/graph/ip/${encodeURIComponent(ipOf(node))}/data`;
     else if (fqdnOf(node)) path = `/graph/domain/${encodeURIComponent(fqdnOf(node))}/data`;
