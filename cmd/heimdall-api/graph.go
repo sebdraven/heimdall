@@ -17,6 +17,7 @@ import (
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
+	"github.com/sebdraven/heimdall/internal/vt"
 )
 
 const (
@@ -637,17 +638,13 @@ func graphObjects(g graphJSON) []string {
 // startEnrich looks up objects in the background unless an enrichment of
 // target is running, and answers 202 with the state of the target's job.
 func (s *server) startEnrich(w http.ResponseWriter, r *http.Request, objects []string, target, label string) {
-	job, started := s.vtJobs.begin(target)
-	if started {
-		// The job outlives the request, which a proxy may cut.
-		go s.runEnrich(context.WithoutCancel(r.Context()), target, label, objects)
-	}
+	job := s.vtJobs.start(r.Context(), target, vtJobTimeout, func(ctx context.Context) (vt.Summary, string) {
+		return s.runEnrich(ctx, label, objects)
+	})
 	writeJSON(w, http.StatusAccepted, job)
 }
 
-func (s *server) runEnrich(base context.Context, target, label string, objects []string) {
-	ctx, cancel := context.WithTimeout(base, vtJobTimeout)
-	defer cancel()
+func (s *server) runEnrich(ctx context.Context, label string, objects []string) (vt.Summary, string) {
 	sum, err := s.vt.Enrich(ctx, objects)
 	note, errMsg := stopNote(sum.StoppedReason), ""
 	if err != nil {
@@ -657,9 +654,9 @@ func (s *server) runEnrich(base context.Context, target, label string, objects [
 			errMsg = "timed out after " + vtJobTimeout.String()
 		}
 	}
-	s.auditCtx(base, "vt.enrich", fmt.Sprintf("%s (looked up %d, cached %d, skipped for budget %d%s)",
+	s.auditCtx(context.WithoutCancel(ctx), "vt.enrich", fmt.Sprintf("%s (looked up %d, cached %d, skipped for budget %d%s)",
 		label, sum.LookedUp, sum.Cached, sum.SkippedBudget, note))
-	s.vtJobs.finish(target, sum, errMsg)
+	return sum, errMsg
 }
 
 func stopNote(reason string) string {
@@ -694,7 +691,7 @@ func (s *server) vtJobCampaign(w http.ResponseWriter, r *http.Request) {
 func (s *server) writeVTJob(w http.ResponseWriter, target string) {
 	job, ok := s.vtJobs.get(target)
 	if !ok {
-		job = vtJob{State: vtNone}
+		job = vtJob{State: jobNone}
 	}
 	writeJSON(w, http.StatusOK, job)
 }
