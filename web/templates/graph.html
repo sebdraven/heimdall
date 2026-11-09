@@ -25,6 +25,8 @@
     <li><span class="swatch-line swatch-vt"></span>VirusTotal resolution</li>
     {{end}}
   </ul>
+  <p class="meta">click: expand the neighbours · right click: actions</p>
+  <p class="notice" id="graph-expand" aria-live="polite" hidden></p>
   <p class="notice" id="graph-cdn" hidden><span id="graph-cdn-count"></span> CDN addresses left out</p>
   <p class="notice" id="graph-truncated" hidden>truncated at {{.Data.MaxNodes}} nodes</p>
   <p class="notice" id="graph-vt-summary"{{with .Data.VT}} data-endpoint="{{.Endpoint}}"{{end}} hidden></p>
