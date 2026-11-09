@@ -110,7 +110,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		now:       time.Now,
 	}
 	s.enrich = &enrich.Enricher{
-		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: enrich.NewCTClient(cfg.CTURL), PDNS: chs,
+		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: enrich.NewCTClient(cfg.CTURL, cfg.CertSpotterAPIKey), PDNS: chs,
 	}
 	s.enrichJobs, s.enrichDB, s.links = newJobs[enrichSummary](), pgs, pgs
 	return s, nil
