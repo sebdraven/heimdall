@@ -1,5 +1,5 @@
 // Follows a VirusTotal enrichment: POST starts it, GET polls it every 2 s
-// while it runs. Used by graph.js and the domain page.
+// while it runs. Used by graph.js and the domain and rdata pages.
 (() => {
   'use strict';
 
@@ -19,26 +19,18 @@
     return msg;
   };
 
-  // watch wires the status element, whose data-endpoint is the job, and the
-  // button, if any. A finished job reloads reloadURL, or the page.
-  const watch = (status, button, reloadURL) => {
-    const say = (msg) => {
-      status.textContent = msg;
-      status.hidden = false;
-    };
+  const say = (status, msg) => {
+    status.textContent = msg;
+    status.hidden = false;
+  };
 
-    const saved = sessionStorage.getItem(summaryKey);
-    if (saved) {
-      sessionStorage.removeItem(summaryKey);
-      say(saved);
-    }
-
-    const endpoint = status.dataset.endpoint;
-    if (!endpoint) return;
-
+  // follower reports in status the job polled at endpoint, disabling the
+  // button, if any, while it runs. A finished job reloads reloadURL, or the
+  // page.
+  const follower = (status, endpoint, button, reloadURL) => {
     const failed = (msg) => {
       if (button) button.disabled = false;
-      say(`VirusTotal enrichment failed: ${msg}`);
+      say(status, `VirusTotal enrichment failed: ${msg}`);
     };
 
     const poll = () => fetch(endpoint, { headers: { Accept: 'application/json' } }).then(getJSON);
@@ -46,7 +38,7 @@
     const follow = (job) => {
       if (job.state === 'running') {
         if (button) button.disabled = true;
-        say('VirusTotal enrichment running…');
+        say(status, 'VirusTotal enrichment running…');
         window.setTimeout(() => poll().then(follow).catch((err) => failed(err.message)), pollEvery);
       } else if (job.state === 'done') {
         sessionStorage.setItem(summaryKey, summaryText(job));
@@ -57,29 +49,59 @@
       }
     };
 
+    const start = (postURL, csrf) => {
+      if (button) button.disabled = true;
+      fetch(postURL, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'X-CSRF-Token': csrf },
+      })
+        .then(getJSON)
+        .then(follow)
+        .catch((err) => failed(err.message));
+    };
+
+    return { poll, follow, start };
+  };
+
+  // watch wires the status element, whose data-endpoint is the job, the
+  // button and the depth select, if any.
+  const watch = (status, button, reloadURL, depth) => {
+    const saved = sessionStorage.getItem(summaryKey);
+    if (saved) {
+      sessionStorage.removeItem(summaryKey);
+      say(status, saved);
+    }
+
+    const endpoint = status.dataset.endpoint;
+    if (!endpoint) return;
+    const job = follower(status, endpoint, button, reloadURL);
+
     // A finished job is not shown again: it would reload the page in a loop.
-    poll()
-      .then((job) => {
-        if (job.state === 'running') follow(job);
+    job
+      .poll()
+      .then((j) => {
+        if (j.state === 'running') job.follow(j);
       })
       .catch(() => {});
 
     if (!button) return;
     button.addEventListener('click', () => {
-      button.disabled = true;
-      fetch(endpoint, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'X-CSRF-Token': button.dataset.csrf },
-      })
-        .then(getJSON)
-        .then(follow)
-        .catch((err) => failed(err.message));
+      let postURL = endpoint;
+      if (depth) {
+        const u = new URL(endpoint, window.location.href);
+        u.searchParams.set('depth', depth.value);
+        postURL = u.pathname + u.search;
+      }
+      job.start(postURL, button.dataset.csrf);
     });
   };
 
-  window.heimdallVTJob = { watch };
+  // enrich starts the job at endpoint and reports it in status.
+  const enrich = (status, endpoint, csrf, reloadURL) => follower(status, endpoint, null, reloadURL).start(endpoint, csrf);
 
-  // The domain page.
+  window.heimdallVTJob = { watch, enrich };
+
+  // The domain and rdata pages.
   const status = document.getElementById('vt-job');
-  if (status) watch(status, document.getElementById('vt-enrich'));
+  if (status) watch(status, document.getElementById('vt-enrich'), null, document.getElementById('vt-depth'));
 })();
