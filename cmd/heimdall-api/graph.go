@@ -500,15 +500,19 @@ func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 // graphView is what graph.html shows. Path is set for a domain graph, which
 // offers both depths. VT is nil when VirusTotal is not configured. CDN, the
 // provider, is set for the graph of a CDN address, which is not drawn.
+// Campaigns, for an analyst only, and CurrentCampaign, 0 if none, fill the
+// "Link to campaign" dialog.
 type graphView struct {
-	Title    string
-	Back     string
-	Source   string
-	Path     string
-	Depth    int
-	MaxNodes int
-	VT       *graphVTView
-	CDN      string
+	Title           string
+	Back            string
+	Source          string
+	Path            string
+	Depth           int
+	MaxNodes        int
+	VT              *graphVTView
+	CDN             string
+	Campaigns       []campaignRef
+	CurrentCampaign int64
 }
 
 // graphVTView drives the VirusTotal controls. Remaining is -1 when unknown.
@@ -550,6 +554,10 @@ func (s *server) graphDomainPage(w http.ResponseWriter, r *http.Request) {
 		Source: path + "/data?depth=" + strconv.Itoa(depth), Path: path, Depth: depth, MaxNodes: graphMaxNodes,
 	}
 	s.setVT(r, &v, path+"/vt?depth="+strconv.Itoa(depth))
+	if err := s.setLink(r, &v, 0, fqdn); err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
 	s.render(w, r, "graph", http.StatusOK, v)
 }
 
@@ -569,6 +577,10 @@ func (s *server) graphCampaignPage(w http.ResponseWriter, r *http.Request) {
 		Source: fmt.Sprintf("/graph/campaign/%d/data", id), MaxNodes: graphMaxNodes,
 	}
 	s.setVT(r, &v, fmt.Sprintf("/graph/campaign/%d/vt", id))
+	if err := s.setLink(r, &v, id, ""); err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
 	s.render(w, r, "graph", http.StatusOK, v)
 }
 

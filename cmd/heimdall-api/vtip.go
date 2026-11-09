@@ -171,5 +171,9 @@ func (s *server) graphIPPage(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.setVT(r, &v, rdata+"/vt?depth=2")
 	}
+	if err := s.setLink(r, &v, 0, ""); err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
 	s.render(w, r, "graph", http.StatusOK, v)
 }
