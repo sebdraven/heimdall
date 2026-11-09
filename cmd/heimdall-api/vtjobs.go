@@ -37,6 +37,8 @@ func domainTarget(fqdn string) string { return "domain:" + fqdn }
 
 func campaignTarget(id int64) string { return "campaign:" + strconv.FormatInt(id, 10) }
 
+func ipTarget(ip string) string { return "ip:" + ip }
+
 // vtJobs holds the enrichments, at most one running per target. A finished
 // one is kept vtJobKeep.
 type vtJobs struct {
