@@ -51,6 +51,35 @@
     return n.kind === 'domain' ? (n.watched ? 'domain-watched' : 'domain') : n.kind;
   };
 
+  const canEnrich = box.dataset.vt === '1' && box.dataset.analyst === '1';
+  const ipOf = (node) => (node && typeof node.getData === 'function' && node.getData().ip) || '';
+
+  // The status of an enrichment started from a node shows in the graph bar.
+  const enrichIP = (ip) => {
+    const status = document.getElementById('graph-vt-summary');
+    if (!status || !window.heimdallVTJob) return;
+    window.heimdallVTJob.enrich(status, `/rdata/${encodeURIComponent(ip)}/vt?depth=1`, box.dataset.csrf, withVT(true));
+  };
+
+  // Node context menu entries: Pivotick appends UI.contextMenu.menuNode.menu
+  // to its own and calls visible(node) and onclick(event, node).
+  const ipMenu = [
+    {
+      text: 'Enrich with VT',
+      title: 'Look up this address with VirusTotal',
+      variant: 'outline-primary',
+      visible: (node) => canEnrich && ipOf(node) !== '',
+      onclick: (event, node) => enrichIP(ipOf(node)),
+    },
+    {
+      text: 'Open IP graph',
+      title: 'Graph of the names seen on this address',
+      variant: 'outline-primary',
+      visible: (node) => ipOf(node) !== '',
+      onclick: (event, node) => window.location.assign(`/graph/ip/${encodeURIComponent(ipOf(node))}`),
+    },
+  ];
+
   const draw = (g) => {
     if (g.excluded_cdn > 0) {
       document.getElementById('graph-cdn-count').textContent = String(g.excluded_cdn);
@@ -60,7 +89,14 @@
 
     const nodes = g.nodes.map((n) => ({
       id: n.id,
-      data: { label: n.label, type: type(n), href: n.href, campaign: n.campaign, source: n.source },
+      data: {
+        label: n.label,
+        type: type(n),
+        href: n.href,
+        campaign: n.campaign,
+        source: n.source,
+        ip: n.kind === 'ip' ? n.id.slice('ip:'.length) : '',
+      },
     }));
     const edges = g.edges.map((e) => ({
       id: `${e.from}|${e.kind}|${e.to}`,
@@ -74,6 +110,7 @@
         mode: 'light',
         editors: { nodeCreator: { enabled: false }, edgeCreator: { enabled: false }, nodeEditor: { enabled: false } },
         notes: { enabled: false },
+        contextMenu: { menuNode: { menu: ipMenu } },
         simplify: {
           rules: [
             { kind: 'neighbours', enabled: true },
