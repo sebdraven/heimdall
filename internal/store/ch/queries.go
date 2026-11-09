@@ -7,6 +7,7 @@ import (
 	"time"
 
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
+	"github.com/sebdraven/heimdall/internal/enrich"
 )
 
 // Aliases never reuse a column name: ClickHouse resolves aliases before
@@ -72,6 +73,30 @@ func (s *Store) pdns(ctx context.Context, where string, arg any, limit int) ([]P
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SubdomainsOf returns the owner names below zone, latest last seen first.
+func (s *Store) SubdomainsOf(ctx context.Context, zone string, limit int) ([]enrich.Subdomain, error) {
+	rows, err := s.conn.Query(ctx, `
+		SELECT rrname, min(first_seen) AS fs, max(last_seen) AS ls
+		FROM pdns
+		WHERE endsWith(rrname, ?)
+		GROUP BY rrname
+		ORDER BY ls DESC, rrname
+		LIMIT ?`, "."+zone, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []enrich.Subdomain
+	for rows.Next() {
+		var d enrich.Subdomain
+		if err := rows.Scan(&d.Name, &d.FirstSeen, &d.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }
