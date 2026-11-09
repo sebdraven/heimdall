@@ -1,7 +1,8 @@
 {{define "title"}}{{.Data.Value}} · Heimdall{{end}}
+{{define "head"}}{{if .Data.VT}}<script src="/static/vtjob.js" defer></script>{{end}}{{end}}
 {{define "content"}}
 {{with cdn .Data.Value}}<p class="notice">CDN address ({{.}}): sharing it is not an infrastructure link</p>{{end}}
-<h1><code>{{.Data.Value}}</code></h1>
+<h1><code>{{.Data.Value}}</code>{{if .Data.Addr}} <a class="title-link" href="/graph/ip/{{.Data.Value}}">Graph</a>{{end}}</h1>
 <p class="meta">{{.Data.Names}} distinct names · {{.Data.Outside}} outside the watchlist{{if .Data.Truncated}} · limited to the {{.Data.Limit}} most recent records, counts are partial{{end}}</p>
 
 <table>
@@ -24,7 +25,9 @@
 
 {{with .Data.VT}}
 <h2>VirusTotal</h2>
-<p class="meta">{{template "vt_status" .}}</p>
+<p class="meta">{{template "vt_status" .}}{{if $.Can "analyst"}} <button type="button" id="vt-enrich" data-csrf="{{$.CSRF}}">Enrich with VT</button>
+  <label>depth <select id="vt-depth"><option value="1">1: the address</option><option value="2">2: and the names seen on it</option></select></label>{{end}}</p>
+<p class="notice" id="vt-job" data-endpoint="{{.Endpoint}}" hidden></p>
 <table>
   <thead><tr><th>Name</th><th>First seen (VT)</th><th>Last seen (VT)</th><th>Markers</th></tr></thead>
   <tbody>

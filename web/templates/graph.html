@@ -30,5 +30,9 @@
   <p class="notice" id="graph-vt-summary"{{with .Data.VT}} data-endpoint="{{.Endpoint}}"{{end}} hidden></p>
   <p class="error" id="graph-error" hidden></p>
 </div>
-<div id="graph" class="graph-canvas" data-source="{{.Data.Source}}"></div>
+{{with .Data.CDN}}
+<p class="notice">CDN address ({{.}}): sharing it is not an infrastructure link</p>
+{{else}}
+<div id="graph" class="graph-canvas" data-source="{{.Data.Source}}"{{if .Data.VT}} data-vt="1"{{end}}{{if $.Can "analyst"}} data-analyst="1" data-csrf="{{$.CSRF}}"{{end}}></div>
+{{end}}
 {{end}}
