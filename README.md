@@ -216,20 +216,32 @@ once:
   the registrar (name, IANA id), the registration, expiration and last
   changed dates, the statuses, the nameservers and the role and name of each
   entity; no email address or phone number. 15 second timeout.
-- Certificate Transparency: `GET {HEIMDALL_CT_URL}/?q=%25.{zone}&output=json`
-  (crt.sh), 30 second timeout. Kept: the 500 latest certificates (crt.sh id,
-  issuer, validity, names from `name_value`, lowercased, wildcards kept) and
-  the unique names of all of them.
+- Certificate Transparency, from Cert Spotter (SSLMate):
+  `GET {HEIMDALL_CT_URL}/v1/issuances?domain={zone}&include_subdomains=true&expand=dns_names&expand=issuer`,
+  then `&after=<id of the last issuance>` until an empty page or 500
+  certificates (`truncated` when it stops there), 30 seconds in all. Kept
+  per certificate: the Cert Spotter issuance id, the full SHA-256 of the
+  certificate (`cert_sha256`, hex), the issuer (friendly name, else name),
+  the validity, whether it is revoked and its DNS names (lowercased, without
+  final dot, wildcards kept), latest `not_before` first; and the union of
+  the names. An HTTP 429 fails the source with `cert spotter rate limited`
+  (and the `Retry-After`, if any); the certificates already read are not
+  kept.
 - Subdomains: the names below the zone in Heimdall's passive DNS
   (ClickHouse only), with first and last seen, at most 500, latest first.
 
 CT and subdomains search below the zone found by DNS when it lies within the
-registrable domain, else below the registrable domain. RDAP and crt.sh are
-called by `heimdall-api`, with the `User-Agent` `heimdall`.
+registrable domain, else below the registrable domain. RDAP and Cert
+Spotter are called by `heimdall-api`, with the `User-Agent` `heimdall`.
 
-| Variable          | Default          | Meaning                                           |
-|-------------------|------------------|---------------------------------------------------|
-| `HEIMDALL_CT_URL` | `https://crt.sh` | crt.sh-compatible Certificate Transparency search |
+| Variable                       | Default                       | Meaning                                           |
+|--------------------------------|-------------------------------|---------------------------------------------------|
+| `HEIMDALL_CT_URL`              | `https://api.certspotter.com` | Cert Spotter API                                  |
+| `HEIMDALL_CERTSPOTTER_API_KEY` | empty                         | Cert Spotter key, sent as `Authorization: Bearer` |
+
+Without a key, the public Cert Spotter API limits the number of requests,
+and each page of a search is one request: enrichments may then fail with
+`cert spotter rate limited`.
 
 `POST /domains/{fqdn}/enrich` (session, `analyst`, CSRF token) starts the
 enrichment in the background, for at most 2 minutes, and answers `202` with
@@ -257,8 +269,10 @@ its subdomains (`SUB`) and the names of the certificates (`CERT`, a wildcard
 as its base name).
 
 `/domains/{fqdn}` has an "Enrichment" section after VirusTotal: the date,
-the resolver, the records, the zone (SOA, NS), RDAP, the certificates (count,
-crt.sh id linked to `https://crt.sh/?id=`, issuer, validity, names), the
+the resolver, the records, the zone (SOA, NS), RDAP, the certificates
+("Certificate Transparency (Cert Spotter)": count, full SHA-256, issuer,
+validity, revocation, names; "—" for the SHA-256 of an enrichment stored
+before Cert Spotter), the
 subdomains, linked to their page, and the error of each failed source. Its
 "Enrich" button (`analyst`) starts the job, follows it with
 `web/static/vtjob.js` and reloads the page at the end.
