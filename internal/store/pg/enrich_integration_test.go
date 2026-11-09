@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestDomainEnrichRoundTrip(t *testing.T) {
 		RDAP: &enrich.RDAP{Domain: "x.example", Registrar: &enrich.Registrar{Name: "R", IANAID: "1"}, Registration: at.AddDate(-1, 0, 0),
 			Status: []string{"active"}, Nameservers: []string{"ns1.p.example"}, Entities: []enrich.Entity{{Roles: []string{"registrar"}, Name: "R"}}},
 		Subdomains: &enrich.Subdomains{Zone: "x.example", Names: []enrich.Subdomain{{Name: "www.x.example", FirstSeen: at, LastSeen: at}}},
-		Errors:     map[string]string{enrich.SourceCT: "crt.sh: HTTP 502"},
+		Errors:     map[string]string{enrich.SourceCT: "cert spotter: HTTP 502"},
 	}
 	if err := s.SaveDomainEnrich(ctx, partial); err != nil {
 		t.Fatal(err)
@@ -79,7 +80,7 @@ func TestDomainEnrichRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.FetchedAt.Equal(at) || got.Status != enrich.StatusPartial || got.CT != nil || got.Errors[enrich.SourceCT] != "crt.sh: HTTP 502" {
+	if !got.FetchedAt.Equal(at) || got.Status != enrich.StatusPartial || got.CT != nil || got.Errors[enrich.SourceCT] != "cert spotter: HTTP 502" {
 		t.Errorf("got %+v", got)
 	}
 	if got.DNS == nil || got.DNS.Rdata("A")[0] != "192.0.2.1" || got.Zone.NS[0] != "ns1.p.example" ||
@@ -89,7 +90,7 @@ func TestDomainEnrichRoundTrip(t *testing.T) {
 	}
 
 	ok := enrich.Result{FQDN: "x.example", FetchedAt: at.Add(time.Hour), Status: enrich.StatusOK,
-		CT: &enrich.CT{Zone: "x.example", Total: 1, Certificates: []enrich.Certificate{{ID: 7, Names: []string{"*.x.example"}}}, Names: []string{"*.x.example"}}}
+		CT: &enrich.CT{Zone: "x.example", Total: 1, Certificates: []enrich.Certificate{{ID: "7", CertSHA256: strings.Repeat("ab", 32), Names: []string{"*.x.example"}}}, Names: []string{"*.x.example"}}}
 	if err := s.SaveDomainEnrich(ctx, ok); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func TestDomainEnrichRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.FetchedAt.Equal(at.Add(time.Hour)) || got.Status != enrich.StatusOK || got.Errors != nil || got.DNS != nil || got.RDAP != nil ||
-		got.CT == nil || got.CT.Certificates[0].ID != 7 {
+		got.CT == nil || got.CT.Certificates[0].ID != "7" || got.CT.Certificates[0].CertSHA256 != strings.Repeat("ab", 32) {
 		t.Errorf("not replaced: %+v", got)
 	}
 
