@@ -113,10 +113,22 @@ GET https://www.virustotal.com/api/v3/ip_addresses/{ip}/resolutions?limit=40
 The `resolutions` (`host_name`, `ip_address`, `date`) go to the ClickHouse
 table `vt_resolutions`; the fetch goes to the Postgres table `vt_fetches`.
 
+`POST /rdata/{ip}/vt[?depth=]` (session, `analyst`, CSRF token) enriches a
+single address, `ip:<ip>`, spelled canonically:
+`2001:4860:4860:0:0:0:0:8888` is `2001:4860:4860::8888`, an IPv4-mapped
+address is unmapped. 400 if `{ip}` is not an address.
+
+- Depth 1 (default): the address alone.
+- Depth 2: the address, then the names seen on it, by Heimdall (its A/AAAA
+  passive DNS records, as on `/rdata/{ip}`) and in the VirusTotal cache, at
+  most 100, latest last seen first. A CDN address has no names: only the
+  address is asked for, and skipped as CDN.
+
 The enrichment runs in the background, for at most 10 minutes, and does not
 depend on the request: the POST answers `202 {"job", "state": "running",
-"started_at"}` at once. One enrichment runs at a time per domain or
-campaign; a POST while one runs answers its state and starts nothing.
+"started_at"}` at once. One enrichment runs at a time per domain, campaign
+or address (whatever the depth); a POST while one runs answers its state
+and starts nothing.
 `GET` on the same path (session, `viewer`) answers the state of the last
 enrichment, or `{"state": "none"}`. `/api/vt/enrich/...` does the same
 under a bearer token (see API) and shares the jobs: a POST there while the
@@ -171,10 +183,18 @@ The domain and rdata pages read the cache only too. With a key,
   the depth 1 graph of the name, follows it as the graph page does and
   reloads the page at the end.
 
-`/rdata/{value}`, when the value is an address, has the same section
-without the button: its last lookup (`ip:<value>`) and the names VirusTotal
-saw on it, marked "watched" when in the watchlist. `web/static/vtjob.js`
-follows the enrichment on both the graph and the domain pages.
+`/rdata/{value}`, when the value is an address, links to its IP graph
+("Graph") and has the same section: its last lookup (`ip:<value>`), the
+names VirusTotal saw on it, marked "watched" when in the watchlist, and the
+"Enrich with VT" button (`analyst`) with a depth choice, 1 or 2, which posts
+to `/rdata/{ip}/vt`, follows the job and reloads the page at the end. Opened
+during an enrichment of the address, the page follows it too.
+
+In every graph page, the context menu of an IP node (right click) has "Open
+IP graph" and, with a key and the `analyst` role, "Enrich with VT": it posts
+to `/rdata/{ip}/vt?depth=1`, shows the state of the job in the graph bar and
+reloads the graph with `?vt=1` at the end. `web/static/vtjob.js` follows the
+enrichment on the graph, domain and rdata pages.
 
 ## Quick start
 
@@ -263,6 +283,7 @@ GET    /api/events?since=&until=&kind=&campaign=&domain=&limit=
 GET    /api/pivots/{fqdn}[?limit=]  names sharing an A/AAAA value or the whole NS set, with overlap, see below
 GET    /api/graph/domain/{fqdn}[?depth=]   graph around a name, see Graph view
 GET    /api/graph/campaign/{id}     graph of a campaign, 404 if unknown, see Graph view
+GET    /api/graph/ip/{ip}           graph of an address, 400 if not one, see Graph view
 GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
 GET    /api/vt/ip/{ip}              names VirusTotal saw on an address, cache only, see below
 GET    /api/vt/budget               VirusTotal lookups of the UTC day
@@ -270,6 +291,8 @@ POST   /api/vt/enrich/domain/{fqdn}[?depth=]   analyst, enrichment job, see Viru
 GET    /api/vt/enrich/domain/{fqdn} state of the job
 POST   /api/vt/enrich/campaign/{id} analyst, enrichment job, 404 if unknown
 GET    /api/vt/enrich/campaign/{id} state of the job
+POST   /api/vt/enrich/ip/{ip}[?depth=]   analyst, enrichment job of an address, 400 if not one
+GET    /api/vt/enrich/ip/{ip}       state of the job
 GET    /healthz                     no auth
 ```
 
@@ -304,8 +327,10 @@ current UTC day and those left.
 
 `POST /api/vt/enrich/domain/{fqdn}[?depth=]` and `POST
 /api/vt/enrich/campaign/{id}` (`analyst`) start the enrichment of
-`POST /graph/.../vt` and answer `202` with the state of the job; `GET`
-(`viewer`) answers that state, or `{"state": "none"}`.
+`POST /graph/.../vt`, and `POST /api/vt/enrich/ip/{ip}[?depth=]` that of
+`POST /rdata/{ip}/vt`; they answer `202` with the state of the job. `GET`
+(`viewer`) answers that state, or `{"state": "none"}`. Both families share
+the jobs: `/api/vt/enrich/ip/{ip}` and `/rdata/{ip}/vt` see the same one.
 
 `changes` merges, newest first and within the same `limit`, the changes of
 the name and those of its zone `zone:{fqdn}`, as the page does. Each carries
@@ -359,8 +384,16 @@ takes Bearer tokens.
 plus the names outside the campaign that share a value or an NS set with at
 least two of its domains.
 
-Both take `?vt=1` for the cached VirusTotal resolutions, see VirusTotal
-passive DNS.
+`/graph/ip/{ip}` (data at `/graph/ip/{ip}/data`, `/api/graph/ip/{ip}` under
+a bearer token), linked as "Graph" from `/rdata/{ip}` and from the context
+menu of IP nodes, centres on an address: its node first, then the names
+Heimdall's passive DNS saw resolve to it (edges `A`/`AAAA`, at most 1000
+records read). 400 if `{ip}` is not an address. A CDN address is not
+drawn: the page says "CDN address" and the JSON is empty with
+`"excluded_cdn": 1`. Its "Enrich with VT" enriches the address at depth 2.
+
+All take `?vt=1` for the cached VirusTotal resolutions, see VirusTotal
+passive DNS; on an IP graph, the names VirusTotal saw on the address.
 
 A node is `{"id", "kind", "label", "watched", "campaign", "href",
 "source"}`:
