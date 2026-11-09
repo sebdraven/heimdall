@@ -25,9 +25,9 @@
   };
 
   // follower reports in status the job polled at endpoint, disabling the
-  // button, if any, while it runs. A finished job reloads reloadURL, or the
-  // page.
-  const follower = (status, endpoint, button, reloadURL) => {
+  // button, if any, while it runs. A finished job calls onDone, if any, or
+  // reloads reloadURL, or the page.
+  const follower = (status, endpoint, button, reloadURL, onDone) => {
     const failed = (msg) => {
       if (button) button.disabled = false;
       say(status, `VirusTotal enrichment failed: ${msg}`);
@@ -40,6 +40,9 @@
         if (button) button.disabled = true;
         say(status, 'VirusTotal enrichment running…');
         window.setTimeout(() => poll().then(follow).catch((err) => failed(err.message)), pollEvery);
+      } else if (job.state === 'done' && onDone) {
+        say(status, summaryText(job));
+        onDone(job);
       } else if (job.state === 'done') {
         sessionStorage.setItem(summaryKey, summaryText(job));
         if (reloadURL) window.location.assign(reloadURL);
@@ -96,8 +99,9 @@
     });
   };
 
-  // enrich starts the job at endpoint and reports it in status.
-  const enrich = (status, endpoint, csrf, reloadURL) => follower(status, endpoint, null, reloadURL).start(endpoint, csrf);
+  // enrich starts the job at endpoint, reports it in status and calls onDone
+  // when it has finished.
+  const enrich = (status, endpoint, csrf, onDone) => follower(status, endpoint, null, null, onDone).start(endpoint, csrf);
 
   window.heimdallVTJob = { watch, enrich };
 
