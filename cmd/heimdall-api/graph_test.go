@@ -203,6 +203,50 @@ func TestBuildGraphVTLimit(t *testing.T) {
 	}
 }
 
+func TestBuildGraphIP(t *testing.T) {
+	in := graphInput{Addr: "9.9.9.9", VT: []ch.VTPair{vtPair("b.example", "9.9.9.9"), vtPair("v.example", "9.9.9.9")}}
+	in.IPPeers = []ch.Pivot{
+		{Domain: "b.example", RRType: "A", RData: "9.9.9.9"},
+		{Domain: "a.example", RRType: "A", RData: "9.9.9.9"},
+		{Domain: "a.example", RRType: "A", RData: "9.9.9.9"},
+		{Domain: "other.example", RRType: "A", RData: "192.0.2.1"},
+	}
+	g := buildGraph(in, testCDN(), graphMaxNodes)
+	nodes, edges := graphSummary(g)
+	if want := "ip:9.9.9.9 d:a.example d:b.example d:v.example"; nodes != want {
+		t.Errorf("nodes = %s\nwant    %s", nodes, want)
+	}
+	if want := "d:a.example>ip:9.9.9.9/A d:b.example>ip:9.9.9.9/A d:b.example>ip:9.9.9.9/VT d:v.example>ip:9.9.9.9/VT"; edges != want {
+		t.Errorf("edges = %s\nwant    %s", edges, want)
+	}
+	var sources []string
+	for _, n := range g.Nodes {
+		sources = append(sources, n.Source)
+	}
+	if got := strings.Join(sources, " "); got != "heimdall heimdall heimdall vt" {
+		t.Errorf("sources = %s", got)
+	}
+	if g.ExcludedCDN != 0 || g.Truncated {
+		t.Errorf("excluded_cdn %d truncated %v, want 0 and false", g.ExcludedCDN, g.Truncated)
+	}
+
+	capped := buildGraph(graphInput{Addr: "9.9.9.9", IPPeers: []ch.Pivot{
+		{Domain: "c.example", RRType: "A", RData: "9.9.9.9"},
+		{Domain: "b.example", RRType: "A", RData: "9.9.9.9"},
+		{Domain: "a.example", RRType: "A", RData: "9.9.9.9"},
+	}}, testCDN(), 3)
+	if nodes, _ := graphSummary(capped); nodes != "ip:9.9.9.9 d:a.example d:b.example" || !capped.Truncated {
+		t.Errorf("capped graph: nodes %q truncated %v, want the address first", nodes, capped.Truncated)
+	}
+
+	cdnIn := graphInput{Addr: "104.16.0.1", VT: []ch.VTPair{vtPair("v.example", "104.16.0.1")}}
+	cdnIn.IPPeers = []ch.Pivot{{Domain: "a.example", RRType: "A", RData: "104.16.0.1"}}
+	g = buildGraph(cdnIn, testCDN(), graphMaxNodes)
+	if got, want := encode(t, g), `{"nodes":[],"edges":[],"truncated":false,"excluded_cdn":1}`; got != want {
+		t.Errorf("CDN address = %s, want %s", got, want)
+	}
+}
+
 type fakeGraphStore struct {
 	values  map[string][]ch.PivotValue
 	current map[string][]ch.Current
@@ -215,12 +259,33 @@ type fakeGraphStore struct {
 	vtCalls int
 	watched map[string]pg.Domain
 	lookups int
+	pdns    []ch.PDNSRecord
 }
 
 func (f *fakeGraphStore) VTPairs(_ context.Context, hosts, ips []string, _ int) ([]ch.VTPair, error) {
 	f.vtCalls++
 	f.vtHosts, f.vtIPs = hosts, ips
 	return f.vt, nil
+}
+
+func (f *fakeGraphStore) VTPairsByIP(_ context.Context, ip string, _ int) ([]ch.VTPair, error) {
+	var out []ch.VTPair
+	for _, p := range f.vt {
+		if p.IP == ip {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeGraphStore) PDNSByRdata(_ context.Context, rdata string, _ int) ([]ch.PDNSRecord, error) {
+	var out []ch.PDNSRecord
+	for _, r := range f.pdns {
+		if r.RData == rdata {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeGraphStore) PivotValues(_ context.Context, fqdn string) ([]ch.PivotValue, error) {
