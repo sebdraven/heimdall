@@ -25,20 +25,26 @@ func (f fakeTokens) TokenUser(_ context.Context, sum []byte) (pg.User, error) {
 	return u, nil
 }
 
-func (fakeTokens) SessionUser(context.Context, []byte) (pg.User, error) {
-	return pg.User{}, pg.ErrNotFound
+// SessionUser takes the tokens as session cookies too.
+func (f fakeTokens) SessionUser(ctx context.Context, sum []byte) (pg.User, error) {
+	return f.TokenUser(ctx, sum)
 }
 
 func (fakeTokens) CreateSession(context.Context, []byte, int64, time.Time) error { return nil }
 
 func (fakeTokens) DeleteSession(context.Context, []byte) error { return nil }
 
-// withTokens accepts the bearer tokens "viewer" and "analyst".
-func withTokens(s *server) http.Handler {
-	s.auth = auth.NewManager(fakeTokens{
+// testAuth accepts the tokens "viewer" and "analyst", as bearer tokens or
+// session cookies.
+func testAuth() *auth.Manager {
+	return auth.NewManager(fakeTokens{
 		string(auth.HashToken("viewer")):  {ID: 1, Username: "val", Role: auth.RoleViewer},
 		string(auth.HashToken("analyst")): {ID: 2, Username: "ana", Role: auth.RoleAnalyst},
 	}, time.Hour, false)
+}
+
+func withTokens(s *server) http.Handler {
+	s.auth = testAuth()
 	return s.routes()
 }
 
@@ -68,6 +74,8 @@ func TestAPIVTDisabled(t *testing.T) {
 		{http.MethodGet, "/api/vt/enrich/domain/www.x.example"},
 		{http.MethodPost, "/api/vt/enrich/campaign/7"},
 		{http.MethodGet, "/api/vt/enrich/campaign/7"},
+		{http.MethodPost, "/api/vt/enrich/ip/9.9.9.9?depth=1"},
+		{http.MethodGet, "/api/vt/enrich/ip/9.9.9.9"},
 	} {
 		if code, body := serveAPI(h, tt.method, tt.target, "analyst"); code != http.StatusNotFound || body != `{"error":"not found"}` {
 			t.Errorf("%s %s without VirusTotal: status %d: %s, want 404", tt.method, tt.target, code, body)
