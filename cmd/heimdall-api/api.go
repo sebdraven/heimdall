@@ -22,6 +22,9 @@ import (
 const (
 	pdnsLimit   = 10000
 	eventsLimit = 10000
+	// defaultInterval is the resolution interval, in seconds, of a name
+	// added without one.
+	defaultInterval = 300
 )
 
 type domainJSON struct {
@@ -465,7 +468,7 @@ func (s *server) apiCreateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.IntervalSeconds == 0 {
-		req.IntervalSeconds = 300
+		req.IntervalSeconds = defaultInterval
 	}
 	if req.IntervalSeconds < 10 {
 		apiError(w, http.StatusBadRequest, "interval_seconds must be at least 10")
