@@ -165,20 +165,21 @@
 </table>
 {{end}}
 {{with .CT}}
-<h3>Certificate Transparency</h3>
-<p class="meta">{{.Total}} certificates for the names below {{.Zone}}, {{len .Names}} names{{if .Truncated}}; the {{len .Certificates}} latest shown{{end}}</p>
+<h3>Certificate Transparency (Cert Spotter)</h3>
+<p class="meta">{{.Total}} certificates for {{.Zone}} and its subdomains, {{len .Names}} names{{if .Truncated}}; the search stopped at {{len .Certificates}}{{end}}</p>
 <table>
-  <thead><tr><th>crt.sh</th><th>Issuer</th><th>Validity (UTC)</th><th>Names</th></tr></thead>
+  <thead><tr><th>SHA-256</th><th>Issuer</th><th>Validity (UTC)</th><th>Revoked</th><th>Names</th></tr></thead>
   <tbody>
   {{range .Certificates}}
     <tr>
-      <td><a href="https://crt.sh/?id={{.ID}}">{{.ID}}</a></td>
+      <td>{{with .CertSHA256}}<code>{{.}}</code>{{else}}—{{end}}</td>
       <td>{{.Issuer}}</td>
       <td class="nowrap">{{ts .NotBefore}} → {{ts .NotAfter}}</td>
+      <td>{{if .Revoked}}<span class="error">revoked</span>{{else}}no{{end}}</td>
       <td>{{range .Names}}<code>{{.}}</code><br>{{end}}</td>
     </tr>
   {{else}}
-    <tr><td colspan="4" class="empty">No certificate logged.</td></tr>
+    <tr><td colspan="5" class="empty">No certificate logged.</td></tr>
   {{end}}
   </tbody>
 </table>
