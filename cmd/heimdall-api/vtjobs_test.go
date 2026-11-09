@@ -182,7 +182,7 @@ func TestVTJobCampaignDisabled(t *testing.T) {
 }
 
 func TestVTJobsForget(t *testing.T) {
-	j := newVTJobs()
+	j := newJobs[vt.Summary]()
 	now := vtJobTime
 	j.now = func() time.Time { return now }
 	const target = "campaign:7"
@@ -190,21 +190,21 @@ func TestVTJobsForget(t *testing.T) {
 	if _, started := j.begin(target); !started {
 		t.Fatal("first job not started")
 	}
-	if job, started := j.begin(target); started || job.State != vtRunning {
+	if job, started := j.begin(target); started || job.State != jobRunning {
 		t.Errorf("second begin: started %v, state %s", started, job.State)
 	}
-	now = now.Add(2 * vtJobKeep)
+	now = now.Add(2 * jobKeep)
 	if _, ok := j.get(target); !ok {
 		t.Error("running job forgotten")
 	}
 	j.finish(target, vt.Summary{LookedUp: 1}, "")
-	now = now.Add(vtJobKeep)
-	if job, ok := j.get(target); !ok || job.State != vtDone || job.LookedUp != 1 {
+	now = now.Add(jobKeep)
+	if job, ok := j.get(target); !ok || job.State != jobDone || job.Result.LookedUp != 1 {
 		t.Errorf("finished job %+v, kept %v", job, ok)
 	}
 	now = now.Add(time.Second)
 	if _, ok := j.get(target); ok {
-		t.Error("finished job kept past vtJobKeep")
+		t.Error("finished job kept past jobKeep")
 	}
 	if _, started := j.begin(target); !started {
 		t.Error("no new job after the last one finished")

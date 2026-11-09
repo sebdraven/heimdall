@@ -1,5 +1,5 @@
 {{define "title"}}{{.Data.FQDN}} · Heimdall{{end}}
-{{define "head"}}{{if .Data.VT}}<script src="/static/vtjob.js" defer></script>{{end}}{{end}}
+{{define "head"}}{{if or .Data.VT .Data.Enrich}}<script src="/static/vtjob.js" defer></script>{{end}}{{if and .Data.Enrich (.Can "analyst")}}<script src="/static/link.js" defer></script>{{end}}{{end}}
 {{define "content"}}
 <h1>{{.Data.FQDN}} <a class="title-link" href="/graph/domain/{{.Data.FQDN}}">Graph</a></h1>
 {{with .Data.Domain}}
@@ -110,5 +110,99 @@
   {{end}}
   </tbody>
 </table>
+{{end}}
+
+{{with .Data.Enrich}}
+<h2>Enrichment</h2>
+<p class="meta">{{with .Result}}last enriched {{ts .FetchedAt}} ({{.Status}}){{with .DNS}} · resolver {{.Resolver}}{{end}}{{else}}not enriched yet{{end}}{{if $.Can "analyst"}}
+  <button type="button" id="enrich-start" data-csrf="{{$.CSRF}}">Enrich</button>
+  <button type="button" id="link-open" data-fqdn="{{$.Data.FQDN}}">Link to campaign</button>{{end}}</p>
+<p class="notice" id="enrich-job" data-endpoint="{{.Endpoint}}" data-label="Enrichment" hidden></p>
+{{with .Result}}
+{{with .Errors}}
+<ul class="enrich-errors">
+  {{range $source, $msg := .}}<li class="error">{{$source}}: {{$msg}}</li>{{end}}
+</ul>
+{{end}}
+{{with .DNS}}
+<h3>Records</h3>
+<table>
+  <thead><tr><th>QType</th><th>Rcode</th><th>TTL</th><th>Rdata</th></tr></thead>
+  <tbody>
+  {{range .Records}}
+    <tr>
+      <td>{{.QType}}</td>
+      <td><span class="rcode rcode-{{.Rcode}}">{{.Rcode}}</span></td>
+      <td>{{.TTL}}</td>
+      <td>{{range .Rdata}}<a href="/rdata/{{.}}"><code>{{.}}</code></a>{{template "cdn_marker" .}}<br>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{with .Zone}}
+<h3>Zone {{domainLink .Name}}</h3>
+<table>
+  <thead><tr><th>Type</th><th>Rdata</th></tr></thead>
+  <tbody>
+  {{range .SOA}}<tr><td>SOA</td><td><code>{{.}}</code></td></tr>{{end}}
+  {{range .NS}}<tr><td>NS</td><td><a href="/rdata/{{.}}"><code>{{.}}</code></a></td></tr>{{end}}
+  </tbody>
+</table>
+{{end}}
+{{with .RDAP}}
+<h3>RDAP {{.Domain}}</h3>
+<table>
+  <tbody>
+    <tr><th>Registrar</th><td>{{with .Registrar}}{{.Name}}{{with .IANAID}} (IANA {{.}}){{end}}{{else}}—{{end}}</td></tr>
+    <tr><th>Registered</th><td class="nowrap">{{ts .Registration}}</td></tr>
+    <tr><th>Expires</th><td class="nowrap">{{ts .Expiration}}</td></tr>
+    <tr><th>Last changed</th><td class="nowrap">{{ts .LastChanged}}</td></tr>
+    <tr><th>Status</th><td>{{range $i, $s := .Status}}{{if $i}}, {{end}}{{$s}}{{end}}</td></tr>
+    <tr><th>Nameservers</th><td>{{range .Nameservers}}<a href="/rdata/{{.}}"><code>{{.}}</code></a><br>{{end}}</td></tr>
+    <tr><th>Entities</th><td>{{range .Entities}}{{range $i, $r := .Roles}}{{if $i}}, {{end}}{{$r}}{{end}}: {{.Name}}<br>{{end}}</td></tr>
+  </tbody>
+</table>
+{{end}}
+{{with .CT}}
+<h3>Certificate Transparency (Cert Spotter)</h3>
+<p class="meta">{{.Total}} certificates for {{.Zone}} and its subdomains, {{len .Names}} names{{if .Truncated}}; the search stopped at {{len .Certificates}}{{end}}</p>
+<table>
+  <thead><tr><th>SHA-256</th><th>Issuer</th><th>Validity (UTC)</th><th>Revoked</th><th>Names</th></tr></thead>
+  <tbody>
+  {{range .Certificates}}
+    <tr>
+      <td>{{with .CertSHA256}}<code>{{.}}</code>{{else}}—{{end}}</td>
+      <td>{{.Issuer}}</td>
+      <td class="nowrap">{{ts .NotBefore}} → {{ts .NotAfter}}</td>
+      <td>{{if .Revoked}}<span class="error">revoked</span>{{else}}no{{end}}</td>
+      <td>{{range .Names}}<code>{{.}}</code><br>{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No certificate logged.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{with .Subdomains}}
+<h3>Subdomains</h3>
+<p class="meta">Names below {{.Zone}} in passive DNS{{if .Truncated}}, the {{len .Names}} last seen{{end}}</p>
+<table>
+  <thead><tr><th>Name</th><th>First seen (UTC)</th><th>Last seen (UTC)</th></tr></thead>
+  <tbody>
+  {{range .Names}}
+    <tr>
+      <td><a href="/domains/{{.Name}}">{{.Name}}</a></td>
+      <td class="nowrap">{{ts .FirstSeen}}</td>
+      <td class="nowrap">{{ts .LastSeen}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="3" class="empty">No subdomain in passive DNS.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
+{{if $.Can "analyst"}}{{template "link_dialog" $}}{{end}}
 {{end}}
 {{end}}

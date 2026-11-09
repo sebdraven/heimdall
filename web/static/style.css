@@ -13,6 +13,9 @@
   --graph-nsset: #e0a030;
   --graph-vt: #7b4fbf;
   --graph-vt-node: #b39ddb;
+  --graph-mx: #3d8b5f;
+  --graph-cert: #c2185b;
+  --graph-sub: #5c6bc0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -58,6 +61,7 @@ a:hover { text-decoration: underline; }
 
 h1 { font-size: 1.4rem; margin: .5rem 0 1rem; }
 h2 { font-size: 1.1rem; margin: 2rem 0 .6rem; }
+h3 { font-size: 1rem; margin: 1.25rem 0 .5rem; }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; vertical-align: top; padding: .35rem .5rem; border-bottom: 1px solid var(--line); }
@@ -113,6 +117,21 @@ form.inline .wide { min-width: 20rem; }
 
 .title-link { font-size: .8rem; font-weight: 400; margin-left: .5rem; }
 
+.enrich-errors { margin: .5rem 0; padding-left: 1.2rem; }
+
+dialog {
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  width: min(36rem, 90vw);
+}
+dialog::backdrop { background: rgb(0 0 0 / .35); }
+dialog h2 { margin-top: 0; }
+dialog p { margin: .6rem 0; }
+dialog select, dialog input:not([type]) { max-width: 100%; }
+
 main:has(> .graph-canvas) { max-width: none; padding-bottom: 1rem; }
 .graph-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.25rem; margin-bottom: .6rem; }
 .graph-bar h1, .graph-bar p { margin: 0; }
@@ -125,4 +144,7 @@ main:has(> .graph-canvas) { max-width: none; padding-bottom: 1rem; }
 .swatch-vt-node { background: var(--graph-vt-node); }
 .swatch-line { display: inline-block; width: 1.2rem; margin-right: .35rem; vertical-align: middle; }
 .swatch-vt { border-top: 2px dashed var(--graph-vt); }
+.swatch-mx { border-top: 2px solid var(--graph-mx); }
+.swatch-cert { border-top: 2px dashed var(--graph-cert); }
+.swatch-sub { border-top: 2px solid var(--graph-sub); }
 .graph-canvas { position: relative; height: calc(100vh - 8.5rem); min-height: 24rem; border: 1px solid var(--line); border-radius: 4px; }

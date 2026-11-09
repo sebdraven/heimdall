@@ -218,6 +218,41 @@ func TestSearchNamesAndValues(t *testing.T) {
 	}
 }
 
+func TestSubdomainsOf(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	answer := func(at time.Time, name, value string) resolver.Observation {
+		return resolver.Observation{
+			TS: at, Domain: name, QType: "A", Resolver: "9.9.9.9:53", Rcode: "NOERROR", Rdata: []string{value},
+			Answers: []resolver.Answer{{Name: name, Type: "A", Value: value}},
+		}
+	}
+	if err := s.InsertObservations(ctx, []resolver.Observation{
+		answer(ts, "old.x.example", "192.0.2.1"),
+		answer(ts.Add(time.Hour), "old.x.example", "192.0.2.2"),
+		answer(ts.Add(2*time.Hour), "www.a.x.example", "192.0.2.3"),
+		answer(ts.Add(3*time.Hour), "x.example", "192.0.2.4"),
+		answer(ts.Add(4*time.Hour), "notx.example", "192.0.2.5"),
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := s.SubdomainsOf(ctx, "x.example", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "www.a.x.example" || got[1].Name != "old.x.example" {
+		t.Fatalf("subdomains = %+v, want www.a.x.example then old.x.example", got)
+	}
+	if !got[1].FirstSeen.Equal(ts) || !got[1].LastSeen.Equal(ts.Add(time.Hour)) {
+		t.Errorf("old.x.example seen %s to %s, want %s to %s", got[1].FirstSeen, got[1].LastSeen, ts, ts.Add(time.Hour))
+	}
+	if got, err := s.SubdomainsOf(ctx, "x.example", 1); err != nil || len(got) != 1 {
+		t.Errorf("limit 1: %+v, %v", got, err)
+	}
+}
+
 func TestNSPairPivots(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

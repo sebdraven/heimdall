@@ -81,7 +81,8 @@
     return typeof href === 'string' && href.startsWith('/') && !href.startsWith('//') ? href : '';
   };
 
-  const canEnrich = box.dataset.vt === '1' && box.dataset.analyst === '1';
+  const isAnalyst = box.dataset.analyst === '1';
+  const canEnrich = box.dataset.vt === '1' && isAnalyst;
   const pageVT = new URL(box.dataset.source, window.location.href).searchParams.get('vt') === '1';
   const maxExpand = 50;
   const expandedStyle = { strokeWidth: 4, strokeColor: color('--fg') };
@@ -124,30 +125,87 @@
     return { ...n, x: node.x + 60 * Math.cos(a), y: node.y + 60 * Math.sin(a) };
   };
 
-  // expand merges the graph of node into the current one, at most maxExpand
-  // new nodes, once per node.
+  // union joins graphs, each node and edge once.
+  const union = (graphs) => {
+    const nodes = new Map();
+    const edges = new Map();
+    graphs.forEach((g) => {
+      g.nodes.forEach((n) => {
+        if (!nodes.has(n.id)) nodes.set(n.id, n);
+      });
+      g.edges.forEach((e) => {
+        const id = toEdge(e).id;
+        if (!edges.has(id)) edges.set(id, e);
+      });
+    });
+    return { nodes: [...nodes.values()], edges: [...edges.values()] };
+  };
+
+  // merge adds the nodes of g the graph lacks around node, at most
+  // maxExpand, and the edges of g between nodes of the graph.
+  const merge = (node, g) => {
+    const fresh = g.nodes.filter((n) => !graph.getMutableNode(n.id));
+    const added = fresh.slice(0, maxExpand);
+    const ids = new Set(added.map((n) => n.id));
+    const present = (id) => ids.has(id) || !!graph.getMutableNode(id);
+    const edges = g.edges.map(toEdge).filter((e) => present(e.from) && present(e.to) && !graph.getMutableEdge(e.id));
+    // An empty update still redraws.
+    graph.updateData(added.map((n, i) => around(toNode(n), node, i, added.length)), edges);
+    if (fresh.length > maxExpand) expandStatus(`+${fresh.length - maxExpand} not shown`);
+    else if (added.length === 0) expandStatus('no neighbours');
+    else expandStatus('');
+  };
+
+  // enrichGraph reads the graph of the last enrichment of fqdn, empty when
+  // there is none (404) or the name cannot be enriched (400).
+  const enrichGraph = (fqdn) =>
+    fetch(`/domains/${encodeURIComponent(fqdn)}/enrich/data`, { headers: { Accept: 'application/json' } }).then((res) => {
+      if (res.status === 404 || res.status === 400) return { nodes: [], edges: [] };
+      return getJSON(res).then((d) => d.graph);
+    });
+
+  // expand merges the graph of node into the current one, with that of the
+  // last enrichment of a domain node, once per node.
   const expand = (node) => {
     const url = expandURL(node);
     if (!graph || !url || expanded.has(node.id) || pending.has(node.id)) return;
     pending.add(node.id);
-    fetch(url, { headers: { Accept: 'application/json' } })
-      .then(getJSON)
-      .then((g) => {
-        const fresh = g.nodes.filter((n) => !graph.getMutableNode(n.id));
-        const added = fresh.slice(0, maxExpand);
-        const ids = new Set(added.map((n) => n.id));
-        const present = (id) => ids.has(id) || !!graph.getMutableNode(id);
-        const edges = g.edges.map(toEdge).filter((e) => present(e.from) && present(e.to) && !graph.getMutableEdge(e.id));
+    const reads = [fetch(url, { headers: { Accept: 'application/json' } }).then(getJSON)];
+    if (fqdnOf(node)) reads.push(enrichGraph(fqdnOf(node)));
+    Promise.all(reads)
+      .then((graphs) => {
         expanded.add(node.id);
         mark(node, true);
-        // An empty update still redraws the border.
-        graph.updateData(added.map((n, i) => around(toNode(n), node, i, added.length)), edges);
-        if (fresh.length > maxExpand) expandStatus(`+${fresh.length - maxExpand} not shown`);
-        else if (added.length === 0) expandStatus('no neighbours');
-        else expandStatus('');
+        merge(node, union(graphs));
       })
       .catch((err) => expandStatus(`Expand failed: ${err.message}`))
       .finally(() => pending.delete(node.id));
+  };
+
+  // enrichDomain enriches the name of node, following the job in the graph
+  // bar, then merges the graph of the enrichment around the node.
+  const enrichDomain = (node) => {
+    const status = document.getElementById('graph-enrich');
+    if (!status || !window.heimdallVTJob) return;
+    const fqdn = fqdnOf(node);
+    window.heimdallVTJob.enrich(status, `/domains/${encodeURIComponent(fqdn)}/enrich`, box.dataset.csrf, () => {
+      enrichGraph(fqdn)
+        .then((g) => {
+          if (graph) merge(graph.getMutableNode(node.id) || node, g);
+        })
+        .catch((err) => expandStatus(`Enrichment graph unavailable: ${err.message}`));
+    });
+  };
+
+  // linkNode opens the "Link to campaign" dialog for the name of node, which
+  // is drawn watched once linked.
+  const linkNode = (node) => {
+    window.heimdallLink.open(fqdnOf(node), (res) => {
+      const n = graph && graph.getMutableNode(node.id);
+      if (!n) return;
+      n.updateData({ type: 'domain-watched', campaign: res.campaign.name });
+      graph.updateData([], []);
+    });
   };
 
   // The status of an enrichment started from a node shows in the graph bar.
@@ -190,6 +248,20 @@
       variant: 'outline-primary',
       visible: (node) => canEnrich && (ipOf(node) !== '' || fqdnOf(node) !== ''),
       onclick: (event, node) => enrichNode(node),
+    },
+    {
+      text: 'Enrich',
+      title: 'Live DNS, RDAP, Certificate Transparency and subdomains of this name',
+      variant: 'outline-primary',
+      visible: (node) => isAnalyst && fqdnOf(node) !== '',
+      onclick: (event, node) => enrichDomain(node),
+    },
+    {
+      text: 'Link to campaign',
+      title: 'Put this name in a campaign of the watchlist',
+      variant: 'outline-primary',
+      visible: (node) => isAnalyst && fqdnOf(node) !== '' && !!window.heimdallLink,
+      onclick: (event, node) => linkNode(node),
     },
   ];
 
@@ -235,6 +307,9 @@
         edgeTypeAccessor: (edge) => edge.getData().kind,
         edgeStyleMap: {
           VT: { dashed: true, animateDash: false, strokeColor: color('--graph-vt') },
+          MX: { strokeColor: color('--graph-mx') },
+          CERT: { dashed: true, animateDash: false, strokeColor: color('--graph-cert') },
+          SUB: { strokeColor: color('--graph-sub') },
         },
       },
       callbacks: {

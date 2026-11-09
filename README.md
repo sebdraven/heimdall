@@ -199,6 +199,106 @@ has finished, the next click on the node expands it again with its cached
 VirusTotal resolutions. `web/static/vtjob.js` follows the enrichment on the
 graph, domain and rdata pages.
 
+## Domain enrichment
+
+An analyst can enrich any name, watched or not, with what Heimdall does not
+collect on its own. Nothing is fetched unless asked for. Four sources run at
+once:
+
+- DNS: the first enabled resolver of `/admin` is asked A, AAAA, CNAME, NS,
+  MX, TXT and SOA, 3 seconds per query. The zone is the name when it owns a
+  SOA, else the zone named by an authority section, which is then asked its
+  SOA and NS. Without an enabled resolver this source fails and the others
+  still run.
+- RDAP: the registrable domain of the name (public suffix list) is looked
+  up on the RDAP server of its TLD, found in the IANA bootstrap
+  (`https://data.iana.org/rdap/dns.json`, kept 24 hours in memory). Kept:
+  the registrar (name, IANA id), the registration, expiration and last
+  changed dates, the statuses, the nameservers and the role and name of each
+  entity; no email address or phone number. 15 second timeout.
+- Certificate Transparency, from Cert Spotter (SSLMate):
+  `GET {HEIMDALL_CT_URL}/v1/issuances?domain={zone}&include_subdomains=true&expand=dns_names&expand=issuer`,
+  then `&after=<id of the last issuance>` until an empty page or 500
+  certificates (`truncated` when it stops there), 30 seconds in all. Kept
+  per certificate: the Cert Spotter issuance id, the full SHA-256 of the
+  certificate (`cert_sha256`, hex), the issuer (friendly name, else name),
+  the validity, whether it is revoked and its DNS names (lowercased, without
+  final dot, wildcards kept), latest `not_before` first; and the union of
+  the names. An HTTP 429 fails the source with `cert spotter rate limited`
+  (and the `Retry-After`, if any); the certificates already read are not
+  kept.
+- Subdomains: the names below the zone in Heimdall's passive DNS
+  (ClickHouse only), with first and last seen, at most 500, latest first.
+
+CT and subdomains search below the zone found by DNS when it lies within the
+registrable domain, else below the registrable domain. RDAP and Cert
+Spotter are called by `heimdall-api`, with the `User-Agent` `heimdall`.
+
+| Variable                       | Default                       | Meaning                                           |
+|--------------------------------|-------------------------------|---------------------------------------------------|
+| `HEIMDALL_CT_URL`              | `https://api.certspotter.com` | Cert Spotter API                                  |
+| `HEIMDALL_CERTSPOTTER_API_KEY` | empty                         | Cert Spotter key, sent as `Authorization: Bearer` |
+
+Without a key, the public Cert Spotter API limits the number of requests,
+and each page of a search is one request: enrichments may then fail with
+`cert spotter rate limited`.
+
+`POST /domains/{fqdn}/enrich` (session, `analyst`, CSRF token) starts the
+enrichment in the background, for at most 2 minutes, and answers `202` with
+the state of the job, as the VirusTotal jobs do: one job per name, `GET` on
+the same path (`viewer`) answers its state or `{"state": "none"}`, a
+finished job is kept an hour in memory. A finished job adds `{"status",
+"counts": {"dns", "rdap", "ct", "subdomains"}, "errors", "summary"}`. 400
+`invalid fqdn` unless `{fqdn}` is a valid name. The action is in the audit
+log as `domain.enrich`.
+
+Each source can fail alone: its error is kept and the others are stored.
+The status is `ok`, `partial` (some sources failed) or `error` (all of
+them). The last enrichment of a name replaces the previous one in the
+Postgres table `domain_enrich` (`fqdn`, `fetched_at`, `status`, and the
+`dns`, `zone`, `rdap`, `ct`, `subdomains` and `errors` JSON, a failed source
+being `NULL`).
+
+`GET /domains/{fqdn}/enrich/data` (`viewer`) returns the stored enrichment,
+`{"fqdn", "fetched_at", "status", "dns", "zone", "rdap", "ct",
+"subdomains", "errors", "graph"}`, 404 before the first one. `graph` is a
+graph as in Graph view, at most 500 nodes: the name, its addresses (edges
+`A`/`AAAA`, CDN addresses left out and counted), its CNAME and MX targets
+(`CNAME`, `MX`), the NS set of its zone (`NS_SET`, 2 nameservers at least),
+its subdomains (`SUB`) and the names of the certificates (`CERT`, a wildcard
+as its base name).
+
+`/domains/{fqdn}` has an "Enrichment" section after VirusTotal: the date,
+the resolver, the records, the zone (SOA, NS), RDAP, the certificates
+("Certificate Transparency (Cert Spotter)": count, full SHA-256, issuer,
+validity, revocation, names; "—" for the SHA-256 of an enrichment stored
+before Cert Spotter), the
+subdomains, linked to their page, and the error of each failed source. Its
+"Enrich" button (`analyst`) starts the job, follows it with
+`web/static/vtjob.js` and reloads the page at the end.
+
+### Link to campaign
+
+`POST /domains/{fqdn}/link` (session, `analyst`, CSRF token) puts a name in
+a campaign. The body is `{"campaign": <id>}` or `{"new_campaign": {"name",
+"description"}}`, exactly one of them (400 `campaign or new_campaign`).
+
+- `new_campaign` is created first, with the checks of `POST /campaigns`
+  (400 `name is required`, 409 `campaign exists`), audited as
+  `campaign.create`. An unknown `campaign` is 404 `unknown campaign`.
+- A name outside the watchlist is added in the campaign with the default
+  interval of 300 seconds (`domain.import`); a watched name is moved to it
+  (`domain.update`), or left as it is when it already belongs to it.
+
+The answer is `{"fqdn", "campaign": {"id", "name"}, "action":
+"added"|"moved"|"unchanged", "created_campaign"}`.
+
+The "Link to campaign" button of the domain page (`analyst`, next to
+"Enrich") opens a dialog with three choices: the current campaign (that of
+the name, absent when it has none), another campaign, or a new one (name,
+description). The page reloads once the name is linked.
+`web/static/link.js` drives the dialog on the domain and graph pages.
+
 ## Quick start
 
 ```sh
@@ -297,6 +397,10 @@ POST   /api/vt/enrich/campaign/{id} analyst, enrichment job, 404 if unknown
 GET    /api/vt/enrich/campaign/{id} state of the job
 POST   /api/vt/enrich/ip/{ip}[?depth=]   analyst, enrichment job of an address, 400 if not one
 GET    /api/vt/enrich/ip/{ip}       state of the job
+POST   /api/enrich/domain/{fqdn}    analyst, domain enrichment job, see Domain enrichment
+GET    /api/enrich/domain/{fqdn}    state of the job
+GET    /api/domains/{fqdn}/enrich   last enrichment and its graph, 404 if none
+POST   /api/domains/{fqdn}/link     analyst, {"campaign"} or {"new_campaign": {"name", "description"}}, see Link to campaign
 GET    /healthz                     no auth
 ```
 
@@ -328,6 +432,11 @@ cache only. `campaign` is that of the watched name, `""` otherwise. 400 if
 `/api/vt/budget` returns `{"budget", "used_today", "remaining"}`:
 `HEIMDALL_VT_DAILY_BUDGET`, the lookups counted in `vt_usage` for the
 current UTC day and those left.
+
+`POST /api/enrich/domain/{fqdn}`, `GET /api/enrich/domain/{fqdn}`, `GET
+/api/domains/{fqdn}/enrich` and `POST /api/domains/{fqdn}/link` are the
+bearer token routes of `/domains/{fqdn}/enrich`, `/domains/{fqdn}/enrich/data`
+and `/domains/{fqdn}/link`, and share their jobs.
 
 `POST /api/vt/enrich/domain/{fqdn}[?depth=]` and `POST
 /api/vt/enrich/campaign/{id}` (`analyst`) start the enrichment of
@@ -372,12 +481,20 @@ domain or IP node expands it in place: the page reads its graph
 (`/graph/domain/{fqdn}/data`, depth 1, or `/graph/ip/{ip}/data`, with
 `?vt=1` when the page shows VirusTotal or the node was enriched from its
 menu) and adds the nodes and edges it lacks around the node, at most 50 new
-nodes ("+N not shown" beyond, "no neighbours" when nothing is new). Clicking
+nodes ("+N not shown" beyond, "no neighbours" when nothing is new). A domain
+node also brings the graph of its last enrichment
+(`/domains/{fqdn}/enrich/data`, none before the first one). Clicking
 an NS set node expands it the same way with the domains whose current NS
 set is identical (`/graph/ns/{set}/data`). An expanded node gets a thicker
 border and is not read again. Other nodes do nothing on click. The context
 menu (right click) of a domain or IP node has "Open page" (`/domains/{fqdn}`
-or `/rdata/{ip}`). The graph opens
+or `/rdata/{ip}`). For an `analyst`, that of a domain node also has
+"Enrich", which starts the domain enrichment, follows it in the graph bar
+and adds the graph of the enrichment around the node, and "Link to
+campaign", which opens the dialog of the domain page, its current campaign
+being that of a campaign graph or of the name of a domain graph; a linked
+node is drawn watched, and a campaign created there is offered at once in
+the dialog. The graph opens
 simplified: nodes with the same neighbours are grouped into one, which the
 Simplify panel of the side rail turns off or combines with its other rules.
 The browser reads the graph from `/graph/domain/{fqdn}/data` and
@@ -429,7 +546,8 @@ A node is `{"id", "kind", "label", "watched", "campaign", "href",
 
 The nameservers of an `nsset` are sorted. `watched` and `campaign` come from
 the watchlist. An edge is `{"from", "to", "kind"}`, `kind` being `A`, `AAAA`,
-`CNAME`, `NS_SET` or, with `first_seen` and `last_seen`, `VT`. Nodes and edges are unique. CDN addresses are left out
+`CNAME`, `NS_SET` or, with `first_seen` and `last_seen`, `VT`; the graph of
+an enrichment adds `MX`, `CERT` (dashed) and `SUB`. Nodes and edges are unique. CDN addresses are left out
 and counted in `excluded_cdn`. A graph stops at 500 nodes, the domains of the
 request first, with `"truncated": true`; it is also set when a pivot query
 reaches its limit of 500 rows.

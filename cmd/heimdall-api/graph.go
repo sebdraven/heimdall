@@ -17,6 +17,7 @@ import (
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
+	"github.com/sebdraven/heimdall/internal/vt"
 )
 
 const (
@@ -30,8 +31,11 @@ const (
 	nodeIP     = "ip"
 	nodeNSSet  = "nsset"
 	edgeCNAME  = "CNAME"
+	edgeMX     = "MX"
 	edgeNSSet  = "NS_SET"
 	edgeVT     = "VT"
+	edgeCert   = "CERT"
+	edgeSub    = "SUB"
 
 	sourceHeimdall = "heimdall"
 	sourceVT       = "vt"
@@ -144,6 +148,15 @@ type graphBuilder struct {
 	edges map[edgeKey]bool
 }
 
+func newGraphBuilder(limit int, truncated bool) *graphBuilder {
+	return &graphBuilder{
+		g:     graphJSON{Nodes: []graphNode{}, Edges: []graphEdge{}, Truncated: truncated},
+		limit: limit,
+		nodes: map[string]bool{},
+		edges: map[edgeKey]bool{},
+	}
+}
+
 // node adds n unless the graph is full, and reports whether n is in it.
 func (b *graphBuilder) node(n graphNode) bool {
 	if b.nodes[n.ID] {
@@ -186,12 +199,7 @@ type peerLink struct {
 // those touching a node already in the graph. A CDN Addr gives an empty
 // graph.
 func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
-	b := &graphBuilder{
-		g:     graphJSON{Nodes: []graphNode{}, Edges: []graphEdge{}, Truncated: in.Partial},
-		limit: limit,
-		nodes: map[string]bool{},
-		edges: map[edgeKey]bool{},
-	}
+	b := newGraphBuilder(limit, in.Partial)
 	ipHolders := map[string]map[string]bool{}
 	if in.Addr != "" {
 		if _, ok := cl.Classify(in.Addr); ok {
@@ -500,15 +508,19 @@ func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 // graphView is what graph.html shows. Path is set for a domain graph, which
 // offers both depths. VT is nil when VirusTotal is not configured. CDN, the
 // provider, is set for the graph of a CDN address, which is not drawn.
+// Campaigns, for an analyst only, and CurrentCampaign, 0 if none, fill the
+// "Link to campaign" dialog.
 type graphView struct {
-	Title    string
-	Back     string
-	Source   string
-	Path     string
-	Depth    int
-	MaxNodes int
-	VT       *graphVTView
-	CDN      string
+	Title           string
+	Back            string
+	Source          string
+	Path            string
+	Depth           int
+	MaxNodes        int
+	VT              *graphVTView
+	CDN             string
+	Campaigns       []campaignRef
+	CurrentCampaign int64
 }
 
 // graphVTView drives the VirusTotal controls. Remaining is -1 when unknown.
@@ -550,6 +562,10 @@ func (s *server) graphDomainPage(w http.ResponseWriter, r *http.Request) {
 		Source: path + "/data?depth=" + strconv.Itoa(depth), Path: path, Depth: depth, MaxNodes: graphMaxNodes,
 	}
 	s.setVT(r, &v, path+"/vt?depth="+strconv.Itoa(depth))
+	if err := s.setLink(r, &v, 0, fqdn); err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
 	s.render(w, r, "graph", http.StatusOK, v)
 }
 
@@ -569,6 +585,10 @@ func (s *server) graphCampaignPage(w http.ResponseWriter, r *http.Request) {
 		Source: fmt.Sprintf("/graph/campaign/%d/data", id), MaxNodes: graphMaxNodes,
 	}
 	s.setVT(r, &v, fmt.Sprintf("/graph/campaign/%d/vt", id))
+	if err := s.setLink(r, &v, id, ""); err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
 	s.render(w, r, "graph", http.StatusOK, v)
 }
 
@@ -618,17 +638,13 @@ func graphObjects(g graphJSON) []string {
 // startEnrich looks up objects in the background unless an enrichment of
 // target is running, and answers 202 with the state of the target's job.
 func (s *server) startEnrich(w http.ResponseWriter, r *http.Request, objects []string, target, label string) {
-	job, started := s.vtJobs.begin(target)
-	if started {
-		// The job outlives the request, which a proxy may cut.
-		go s.runEnrich(context.WithoutCancel(r.Context()), target, label, objects)
-	}
+	job := s.vtJobs.start(r.Context(), target, vtJobTimeout, func(ctx context.Context) (vt.Summary, string) {
+		return s.runEnrich(ctx, label, objects)
+	})
 	writeJSON(w, http.StatusAccepted, job)
 }
 
-func (s *server) runEnrich(base context.Context, target, label string, objects []string) {
-	ctx, cancel := context.WithTimeout(base, vtJobTimeout)
-	defer cancel()
+func (s *server) runEnrich(ctx context.Context, label string, objects []string) (vt.Summary, string) {
 	sum, err := s.vt.Enrich(ctx, objects)
 	note, errMsg := stopNote(sum.StoppedReason), ""
 	if err != nil {
@@ -638,9 +654,9 @@ func (s *server) runEnrich(base context.Context, target, label string, objects [
 			errMsg = "timed out after " + vtJobTimeout.String()
 		}
 	}
-	s.auditCtx(base, "vt.enrich", fmt.Sprintf("%s (looked up %d, cached %d, skipped for budget %d%s)",
+	s.auditCtx(context.WithoutCancel(ctx), "vt.enrich", fmt.Sprintf("%s (looked up %d, cached %d, skipped for budget %d%s)",
 		label, sum.LookedUp, sum.Cached, sum.SkippedBudget, note))
-	s.vtJobs.finish(target, sum, errMsg)
+	return sum, errMsg
 }
 
 func stopNote(reason string) string {
@@ -675,7 +691,7 @@ func (s *server) vtJobCampaign(w http.ResponseWriter, r *http.Request) {
 func (s *server) writeVTJob(w http.ResponseWriter, target string) {
 	job, ok := s.vtJobs.get(target)
 	if !ok {
-		job = vtJob{State: vtNone}
+		job = vtJob{State: jobNone}
 	}
 	writeJSON(w, http.StatusOK, job)
 }
