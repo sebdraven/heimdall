@@ -30,8 +30,11 @@ const (
 	nodeIP     = "ip"
 	nodeNSSet  = "nsset"
 	edgeCNAME  = "CNAME"
+	edgeMX     = "MX"
 	edgeNSSet  = "NS_SET"
 	edgeVT     = "VT"
+	edgeCert   = "CERT"
+	edgeSub    = "SUB"
 
 	sourceHeimdall = "heimdall"
 	sourceVT       = "vt"
@@ -144,6 +147,15 @@ type graphBuilder struct {
 	edges map[edgeKey]bool
 }
 
+func newGraphBuilder(limit int, truncated bool) *graphBuilder {
+	return &graphBuilder{
+		g:     graphJSON{Nodes: []graphNode{}, Edges: []graphEdge{}, Truncated: truncated},
+		limit: limit,
+		nodes: map[string]bool{},
+		edges: map[edgeKey]bool{},
+	}
+}
+
 // node adds n unless the graph is full, and reports whether n is in it.
 func (b *graphBuilder) node(n graphNode) bool {
 	if b.nodes[n.ID] {
@@ -186,12 +198,7 @@ type peerLink struct {
 // those touching a node already in the graph. A CDN Addr gives an empty
 // graph.
 func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
-	b := &graphBuilder{
-		g:     graphJSON{Nodes: []graphNode{}, Edges: []graphEdge{}, Truncated: in.Partial},
-		limit: limit,
-		nodes: map[string]bool{},
-		edges: map[edgeKey]bool{},
-	}
+	b := newGraphBuilder(limit, in.Partial)
 	ipHolders := map[string]map[string]bool{}
 	if in.Addr != "" {
 		if _, ok := cl.Classify(in.Addr); ok {
