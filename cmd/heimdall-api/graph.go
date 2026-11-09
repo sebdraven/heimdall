@@ -99,9 +99,12 @@ type graphDomain struct {
 // address (IPPeers) or an NS set (NSPeers, by nsset node id) with them, and
 // the cached VirusTotal pairs (VT). Partial is set when a store call hit its
 // limit. Addr, set for the graph of an address, is its first node, and
-// IPPeers are then the names that resolved to it.
+// IPPeers are then the names that resolved to it. NS, set for the graph of
+// an NS set, is its first node, and NSPeers then hold the names whose set
+// equals it.
 type graphInput struct {
 	Addr      string
+	NS        []string
 	Domains   []graphDomain
 	IPPeers   []ch.Pivot
 	NSPeers   map[string][]ch.NSPairPivot
@@ -198,13 +201,19 @@ func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
 		b.node(ipNode(in.Addr))
 		ipHolders[in.Addr] = map[string]bool{}
 	}
+	nsHolders := map[string]map[string]bool{}
+	nsNodes := map[string]graphNode{}
+	if len(in.NS) > 0 {
+		n := nssetRootNode(in.NS)
+		b.node(n)
+		nsHolders[n.ID] = map[string]bool{}
+		nsNodes[n.ID] = n
+	}
 	members := map[string]bool{}
 	for _, d := range in.Domains {
 		members[d.FQDN] = true
 		b.node(domainNode(d.FQDN))
 	}
-	nsHolders := map[string]map[string]bool{}
-	nsNodes := map[string]graphNode{}
 	excluded := map[string]bool{}
 	for _, d := range in.Domains {
 		from := domainNode(d.FQDN)
