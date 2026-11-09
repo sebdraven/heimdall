@@ -4,6 +4,7 @@
 <script src="/static/vendor/pivotick/pivotick.iife.js" defer></script>
 <script src="/static/vtjob.js" defer></script>
 <script src="/static/graph.js" defer></script>
+{{if .Can "analyst"}}<script src="/static/link.js" defer></script>{{end}}
 {{end}}
 {{define "content"}}
 <div class="graph-bar">
@@ -20,6 +21,9 @@
     <li><span class="swatch swatch-domain"></span>domain unwatched</li>
     <li><span class="swatch swatch-ip"></span>ip</li>
     <li><span class="swatch swatch-nsset"></span>nsset</li>
+    <li><span class="swatch-line swatch-mx"></span>MX</li>
+    <li><span class="swatch-line swatch-cert"></span>CERT: name of a certificate</li>
+    <li><span class="swatch-line swatch-sub"></span>SUB: subdomain in passive DNS</li>
     {{if .Data.VT}}
     <li><span class="swatch swatch-vt-node"></span>seen by VirusTotal only</li>
     <li><span class="swatch-line swatch-vt"></span>VirusTotal resolution</li>
@@ -30,11 +34,13 @@
   <p class="notice" id="graph-cdn" hidden><span id="graph-cdn-count"></span> CDN addresses left out</p>
   <p class="notice" id="graph-truncated" hidden>truncated at {{.Data.MaxNodes}} nodes</p>
   <p class="notice" id="graph-vt-summary"{{with .Data.VT}} data-endpoint="{{.Endpoint}}"{{end}} hidden></p>
+  {{if .Can "analyst"}}<p class="notice" id="graph-enrich" data-label="Enrichment" aria-live="polite" hidden></p>{{end}}
   <p class="error" id="graph-error" hidden></p>
 </div>
 {{with .Data.CDN}}
 <p class="notice">CDN address ({{.}}): sharing it is not an infrastructure link</p>
 {{else}}
 <div id="graph" class="graph-canvas" data-source="{{.Data.Source}}"{{if .Data.VT}} data-vt="1"{{end}}{{if $.Can "analyst"}} data-analyst="1" data-csrf="{{$.CSRF}}"{{end}}></div>
+{{if $.Can "analyst"}}{{template "link_dialog" $}}{{end}}
 {{end}}
 {{end}}
