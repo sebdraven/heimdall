@@ -38,7 +38,8 @@ type Config struct {
 	VTDailyBudget int
 	VTTTL         time.Duration
 
-	CTURL string
+	CTURL             string
+	CertSpotterAPIKey string
 
 	LogLevel slog.Level
 }
@@ -71,7 +72,8 @@ func Load() (*Config, error) {
 		VTDailyBudget: p.int("VT_DAILY_BUDGET", 500),
 		VTTTL:         p.duration("VT_TTL", 168*time.Hour),
 
-		CTURL: p.str("CT_URL", "https://crt.sh"),
+		CTURL:             p.str("CT_URL", "https://api.certspotter.com"),
+		CertSpotterAPIKey: p.str("CERTSPOTTER_API_KEY", ""),
 
 		LogLevel: p.level("LOG_LEVEL", slog.LevelInfo),
 	}
