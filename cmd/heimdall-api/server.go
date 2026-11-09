@@ -20,6 +20,8 @@ import (
 	"github.com/sebdraven/heimdall/internal/cdn"
 	gjallarhorn "github.com/sebdraven/heimdall/internal/changes"
 	"github.com/sebdraven/heimdall/internal/config"
+	"github.com/sebdraven/heimdall/internal/enrich"
+	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
 	"github.com/sebdraven/heimdall/internal/vt"
@@ -42,11 +44,15 @@ type server struct {
 	graph     graphStores
 	analytics analyticsStores
 	// vt is nil without HEIMDALL_VT_API_KEY.
-	vt     *vt.Enricher
-	vtJobs *vtJobs
-	audits auditStore
-	pages  map[string]*template.Template
-	now    func() time.Time
+	vt         *vt.Enricher
+	vtJobs     *jobs[vt.Summary]
+	enrich     *enrich.Enricher
+	enrichJobs *jobs[enrichSummary]
+	enrichDB   enrichStore
+	links      linkStore
+	audits     auditStore
+	pages      map[string]*template.Template
+	now        func() time.Time
 }
 
 // auditStore writes the audit log.
@@ -86,7 +92,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 			Budget: cfg.VTDailyBudget, TTL: cfg.VTTTL, Log: log,
 		}
 	}
-	return &server{
+	s := &server{
 		cfg:       cfg,
 		log:       log,
 		pg:        pgs,
@@ -98,11 +104,16 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		graph:     graphStores{chs, pgs},
 		analytics: analyticsStores{chs, pgs},
 		vt:        enricher,
-		vtJobs:    newVTJobs(),
+		vtJobs:    newJobs[vt.Summary](),
 		audits:    pgs,
 		pages:     pages,
 		now:       time.Now,
-	}, nil
+	}
+	s.enrich = &enrich.Enricher{
+		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: enrich.NewCTClient(cfg.CTURL), PDNS: chs,
+	}
+	s.enrichJobs, s.enrichDB, s.links = newJobs[enrichSummary](), pgs, pgs
+	return s, nil
 }
 
 func (s *server) routes() http.Handler {
@@ -134,6 +145,10 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /domains/{fqdn}", page(viewer, s.domainPage))
 	mux.Handle("POST /domains/{fqdn}/toggle", page(analyst, s.toggleDomain))
 	mux.Handle("DELETE /domains/{fqdn}", page(analyst, s.deleteDomain))
+	mux.Handle("POST /domains/{fqdn}/enrich", page(analyst, s.enrichDomain))
+	mux.Handle("GET /domains/{fqdn}/enrich", page(viewer, s.enrichJobDomain))
+	mux.Handle("GET /domains/{fqdn}/enrich/data", page(viewer, s.apiDomainEnrich))
+	mux.Handle("POST /domains/{fqdn}/link", page(analyst, s.linkDomainPage))
 	mux.Handle("GET /rdata/{value...}", page(viewer, s.rdataPage))
 	mux.Handle("POST /rdata/{ip}/vt", page(analyst, s.enrichIP))
 	mux.Handle("GET /rdata/{ip}/vt", page(viewer, s.vtJobIP))
@@ -166,6 +181,8 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/domains/{fqdn}/detail", api(viewer, s.apiDomainDetail))
 	mux.Handle("PATCH /api/domains/{fqdn}", api(analyst, s.apiPatchDomain))
 	mux.Handle("DELETE /api/domains/{fqdn}", api(analyst, s.apiDeleteDomain))
+	mux.Handle("GET /api/domains/{fqdn}/enrich", api(viewer, s.apiDomainEnrich))
+	mux.Handle("POST /api/domains/{fqdn}/link", api(analyst, s.linkDomainAPI))
 	mux.Handle("GET /api/campaigns", api(viewer, s.apiCampaigns))
 	mux.Handle("POST /api/campaigns", api(analyst, s.apiCreateCampaign))
 	mux.Handle("GET /api/campaigns/{id}/domains", api(viewer, s.apiCampaignDomains))
@@ -185,6 +202,8 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/vt/enrich/campaign/{id}", api(viewer, s.vtJobCampaign))
 	mux.Handle("POST /api/vt/enrich/ip/{ip}", api(analyst, s.enrichIP))
 	mux.Handle("GET /api/vt/enrich/ip/{ip}", api(viewer, s.vtJobIP))
+	mux.Handle("POST /api/enrich/domain/{fqdn}", api(analyst, s.enrichDomain))
+	mux.Handle("GET /api/enrich/domain/{fqdn}", api(viewer, s.enrichJobDomain))
 
 	return s.middleware(mux)
 }

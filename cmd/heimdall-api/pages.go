@@ -254,9 +254,23 @@ func (s *server) domainPage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, "ns pairs", err)
 		return
 	}
+	enrichment, err := s.loadDomainEnrich(r.Context(), fqdn)
+	if err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
+	campaigns, err := s.linkCampaigns(r)
+	if err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
+	var current int64
+	if dd.Domain != nil && dd.Domain.CampaignID != nil {
+		current = *dd.Domain.CampaignID
+	}
 	s.render(w, r, "domain", http.StatusOK, map[string]any{
 		"FQDN": fqdn, "Domain": dd.Domain, "Current": dd.Current, "Changes": dd.Changes, "PDNS": dd.PDNS, "Sharing": sharing,
-		"Zone": zone, "NSPairs": pairs, "VT": dd.VT,
+		"Zone": zone, "NSPairs": pairs, "VT": dd.VT, "Enrich": enrichment, "Campaigns": campaigns, "CurrentCampaign": current,
 	})
 }
 
