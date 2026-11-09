@@ -2,6 +2,25 @@
 
 {{define "cdn_marker"}}{{with cdn .}} <span class="cdn">CDN {{.}}</span>{{end}}{{end}}
 
+{{define "link_dialog"}}
+<dialog id="link-campaign" data-csrf="{{.CSRF}}">
+  <form id="link-form" method="dialog">
+    <h2>Link <span id="link-fqdn"></span> to a campaign</h2>
+    {{range .Data.Campaigns}}{{if eq .ID $.Data.CurrentCampaign}}
+    <p><label><input type="radio" name="link-choice" value="current" data-campaign="{{.ID}}"> Current campaign: {{.Name}}</label></p>
+    {{end}}{{end}}
+    <p><label><input type="radio" name="link-choice" value="other"{{if not .Data.Campaigns}} disabled{{end}}> Other campaign:</label>
+      <select id="link-other" aria-label="Campaign">{{range .Data.Campaigns}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></p>
+    <p><label><input type="radio" name="link-choice" value="new"> New campaign:</label>
+      <input id="link-new-name" placeholder="Name" aria-label="Name">
+      <input id="link-new-description" placeholder="Description" aria-label="Description"></p>
+    <p class="notice" id="link-result" aria-live="polite" hidden></p>
+    <p class="error" id="link-error" aria-live="polite" hidden></p>
+    <p class="actions"><button type="submit" id="link-submit">Link</button> <button type="button" id="link-cancel">Cancel</button></p>
+  </form>
+</dialog>
+{{end}}
+
 {{define "vt_status"}}{{if .Status}}last looked up {{ts .FetchedAt}} ({{.Status}}){{else}}not looked up yet{{end}}{{end}}
 
 {{define "events_table"}}
