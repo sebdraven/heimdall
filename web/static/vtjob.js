@@ -1,10 +1,11 @@
-// Follows a VirusTotal enrichment: POST starts it, GET polls it every 2 s
-// while it runs. Used by graph.js and the domain and rdata pages.
+// Follows a background job, a VirusTotal enrichment or, with a data-label
+// on the status element, a domain enrichment: POST starts it, GET polls it
+// every 2 s while it runs. Used by graph.js and the domain and rdata pages.
 (() => {
   'use strict';
 
-  // The summary survives the reload in sessionStorage.
-  const summaryKey = 'heimdall.vt.summary';
+  // The summary survives the reload in sessionStorage, per status element.
+  const summaryKey = (status) => `heimdall.vt.summary:${status.id}`;
   const pollEvery = 2000;
 
   const getJSON = (res) => {
@@ -12,7 +13,11 @@
     return res.json();
   };
 
-  const summaryText = (j) => {
+  const labelOf = (status) => status.dataset.label || 'VirusTotal enrichment';
+
+  // A domain enrichment brings its own summary.
+  const summaryText = (status, j) => {
+    if (typeof j.summary === 'string') return `${labelOf(status)} ${j.summary}`;
     let msg = `VirusTotal: looked up ${j.looked_up}, cached ${j.cached}, skipped for budget ${j.skipped_budget}` +
       `, CDN ${j.skipped_cdn}, reserved ${j.skipped_reserved}`;
     if (j.stopped_reason) msg += `, stopped: ${j.stopped_reason}`;
@@ -30,7 +35,7 @@
   const follower = (status, endpoint, button, reloadURL, onDone) => {
     const failed = (msg) => {
       if (button) button.disabled = false;
-      say(status, `VirusTotal enrichment failed: ${msg}`);
+      say(status, `${labelOf(status)} failed: ${msg}`);
     };
 
     const poll = () => fetch(endpoint, { headers: { Accept: 'application/json' } }).then(getJSON);
@@ -38,13 +43,13 @@
     const follow = (job) => {
       if (job.state === 'running') {
         if (button) button.disabled = true;
-        say(status, 'VirusTotal enrichment running…');
+        say(status, `${labelOf(status)} running…`);
         window.setTimeout(() => poll().then(follow).catch((err) => failed(err.message)), pollEvery);
       } else if (job.state === 'done' && onDone) {
-        say(status, summaryText(job));
+        say(status, summaryText(status, job));
         onDone(job);
       } else if (job.state === 'done') {
-        sessionStorage.setItem(summaryKey, summaryText(job));
+        sessionStorage.setItem(summaryKey(status), summaryText(status, job));
         if (reloadURL) window.location.assign(reloadURL);
         else window.location.reload();
       } else if (job.state === 'failed') {
@@ -69,9 +74,9 @@
   // watch wires the status element, whose data-endpoint is the job, the
   // button and the depth select, if any.
   const watch = (status, button, reloadURL, depth) => {
-    const saved = sessionStorage.getItem(summaryKey);
+    const saved = sessionStorage.getItem(summaryKey(status));
     if (saved) {
-      sessionStorage.removeItem(summaryKey);
+      sessionStorage.removeItem(summaryKey(status));
       say(status, saved);
     }
 
@@ -108,4 +113,6 @@
   // The domain and rdata pages.
   const status = document.getElementById('vt-job');
   if (status) watch(status, document.getElementById('vt-enrich'), null, document.getElementById('vt-depth'));
+  const enrichStatus = document.getElementById('enrich-job');
+  if (enrichStatus) watch(enrichStatus, document.getElementById('enrich-start'), null, null);
 })();
