@@ -46,6 +46,8 @@ type pdnsStore interface {
 	Pivots(ctx context.Context, fqdn string, values []ch.PivotValue, limit int) ([]ch.Pivot, error)
 	NSPairPivots(ctx context.Context, zone string, set []string, limit int) ([]ch.NSPairPivot, error)
 	VTPairs(ctx context.Context, hosts, ips []string, limit int) ([]ch.VTPair, error)
+	PDNSByRdata(ctx context.Context, rdata string, limit int) ([]ch.PDNSRecord, error)
+	VTPairsByIP(ctx context.Context, ip string, limit int) ([]ch.VTPair, error)
 }
 
 type watchStore interface {
@@ -96,8 +98,10 @@ type graphDomain struct {
 // graphInput holds the domains of a graph and the other names sharing an
 // address (IPPeers) or an NS set (NSPeers, by nsset node id) with them, and
 // the cached VirusTotal pairs (VT). Partial is set when a store call hit its
-// limit.
+// limit. Addr, set for the graph of an address, is its first node, and
+// IPPeers are then the names that resolved to it.
 type graphInput struct {
+	Addr      string
 	Domains   []graphDomain
 	IPPeers   []ch.Pivot
 	NSPeers   map[string][]ch.NSPairPivot
@@ -176,7 +180,8 @@ type peerLink struct {
 // buildGraph turns in into a graph of at most limit nodes, the domains of in
 // first. A peer outside them is kept if it shares an address or an NS set
 // with at least in.MinShared of them. VirusTotal pairs come last, and only
-// those touching a node already in the graph.
+// those touching a node already in the graph. A CDN Addr gives an empty
+// graph.
 func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
 	b := &graphBuilder{
 		g:     graphJSON{Nodes: []graphNode{}, Edges: []graphEdge{}, Truncated: in.Partial},
@@ -184,12 +189,20 @@ func buildGraph(in graphInput, cl *cdn.Classifier, limit int) graphJSON {
 		nodes: map[string]bool{},
 		edges: map[edgeKey]bool{},
 	}
+	ipHolders := map[string]map[string]bool{}
+	if in.Addr != "" {
+		if _, ok := cl.Classify(in.Addr); ok {
+			b.g.ExcludedCDN = 1
+			return b.g
+		}
+		b.node(ipNode(in.Addr))
+		ipHolders[in.Addr] = map[string]bool{}
+	}
 	members := map[string]bool{}
 	for _, d := range in.Domains {
 		members[d.FQDN] = true
 		b.node(domainNode(d.FQDN))
 	}
-	ipHolders := map[string]map[string]bool{}
 	nsHolders := map[string]map[string]bool{}
 	nsNodes := map[string]graphNode{}
 	excluded := map[string]bool{}
@@ -401,7 +414,11 @@ func (s *server) loadGraph(ctx context.Context, fqdns []string, peers bool, minS
 		return graphJSON{}, err
 	}
 	in.MinShared = minShared
-	g := buildGraph(in, s.cdn, graphMaxNodes)
+	return s.watchGraph(ctx, buildGraph(in, s.cdn, graphMaxNodes))
+}
+
+// watchGraph marks the watched domains of g.
+func (s *server) watchGraph(ctx context.Context, g graphJSON) (graphJSON, error) {
 	watched, err := s.graph.DomainsByFQDN(ctx, graphFQDNs(g))
 	if err != nil {
 		return graphJSON{}, err
@@ -472,7 +489,8 @@ func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 }
 
 // graphView is what graph.html shows. Path is set for a domain graph, which
-// offers both depths. VT is nil when VirusTotal is not configured.
+// offers both depths. VT is nil when VirusTotal is not configured. CDN, the
+// provider, is set for the graph of a CDN address, which is not drawn.
 type graphView struct {
 	Title    string
 	Back     string
@@ -481,6 +499,7 @@ type graphView struct {
 	Depth    int
 	MaxNodes int
 	VT       *graphVTView
+	CDN      string
 }
 
 // graphVTView drives the VirusTotal controls. Remaining is -1 when unknown.
@@ -557,7 +576,7 @@ func (s *server) enrichGraphDomain(w http.ResponseWriter, r *http.Request) {
 		s.apiStoreError(w, r, err)
 		return
 	}
-	s.startEnrich(w, r, g, domainTarget(fqdn), "domain "+fqdn)
+	s.startEnrich(w, r, graphObjects(g), domainTarget(fqdn), "domain "+fqdn)
 }
 
 // enrichGraphCampaign serves POST /graph/campaign/{id}/vt and POST
@@ -573,20 +592,25 @@ func (s *server) enrichGraphCampaign(w http.ResponseWriter, r *http.Request) {
 		s.apiStoreError(w, r, err)
 		return
 	}
-	s.startEnrich(w, r, g, campaignTarget(id), "campaign "+name)
+	s.startEnrich(w, r, graphObjects(g), campaignTarget(id), "campaign "+name)
 }
 
-// startEnrich enriches g in the background unless an enrichment of target
-// is running, and answers 202 with the state of the target's job.
-func (s *server) startEnrich(w http.ResponseWriter, r *http.Request, g graphJSON, target, label string) {
+// graphObjects returns the domain and IP nodes of g as VirusTotal objects.
+func graphObjects(g graphJSON) []string {
+	var objects []string
+	for _, n := range g.Nodes {
+		if n.Kind == nodeDomain || n.Kind == nodeIP {
+			objects = append(objects, n.ID)
+		}
+	}
+	return objects
+}
+
+// startEnrich looks up objects in the background unless an enrichment of
+// target is running, and answers 202 with the state of the target's job.
+func (s *server) startEnrich(w http.ResponseWriter, r *http.Request, objects []string, target, label string) {
 	job, started := s.vtJobs.begin(target)
 	if started {
-		var objects []string
-		for _, n := range g.Nodes {
-			if n.Kind == nodeDomain || n.Kind == nodeIP {
-				objects = append(objects, n.ID)
-			}
-		}
 		// The job outlives the request, which a proxy may cut.
 		go s.runEnrich(context.WithoutCancel(r.Context()), target, label, objects)
 	}
