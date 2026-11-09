@@ -14,8 +14,8 @@ import (
 const vtPageRows = 500
 
 // vtView is the VirusTotal section of a domain or rdata page, read from the
-// cache only. Status is empty when the object was never looked up; Endpoint,
-// the enrichment job, is set on a domain page only.
+// cache only. Status is empty when the object was never looked up; Endpoint
+// is the enrichment job.
 type vtView struct {
 	FetchedAt time.Time
 	Status    string

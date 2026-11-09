@@ -380,10 +380,11 @@ type rdataRow struct {
 
 const rdataLimit = 1000
 
-// rdataView is what /rdata/{value} shows. VT is set for an address when
-// VirusTotal is configured.
+// rdataView is what /rdata/{value} shows. Addr is set when the value is an
+// address; VT is set then when VirusTotal is configured.
 type rdataView struct {
 	Value     string
+	Addr      bool
 	Rows      []rdataRow
 	Names     int
 	Outside   int
@@ -397,6 +398,8 @@ type rdataView struct {
 // is flagged as truncated.
 func buildRdataView(value string, records []ch.PDNSRecord, watched map[string]pg.Domain, limit int) rdataView {
 	v := rdataView{Value: value, Rows: make([]rdataRow, 0, len(records)), Limit: limit, Truncated: len(records) == limit}
+	_, err := netip.ParseAddr(value)
+	v.Addr = err == nil
 	names := map[string]struct{}{}
 	for _, rec := range records {
 		row := rdataRow{PDNSRecord: rec}
@@ -453,6 +456,7 @@ func (s *server) rdataPage(w http.ResponseWriter, r *http.Request) {
 	v := buildRdataView(value, records, watched, rdataLimit)
 	if withVT {
 		v.VT = rdataVTView(fetch, pairs, watched)
+		v.VT.Endpoint = "/rdata/" + url.PathEscape(value) + "/vt"
 	}
 	s.render(w, r, "rdata", http.StatusOK, v)
 }
