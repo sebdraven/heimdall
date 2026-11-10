@@ -786,8 +786,43 @@ func (s *server) adminPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "admin", http.StatusOK, map[string]any{
-		"Resolvers": resolvers, "NSClasses": classes, "CDNPrefixes": prefixes, "Audit": audit,
+		"Resolvers": resolvers, "NSClasses": classes, "CDNPrefixes": prefixes, "CDNProviders": cdnProviderCounts(prefixes), "Audit": audit,
 	})
+}
+
+type cdnSourceCount struct {
+	Source string
+	Count  int
+}
+
+// cdnProviderCount is the number of prefixes of a provider, and of each of
+// its sources.
+type cdnProviderCount struct {
+	Provider string
+	Count    int
+	Sources  []cdnSourceCount
+}
+
+func cdnProviderCounts(prefixes []pg.CDNPrefix) []cdnProviderCount {
+	byProvider := map[string]map[string]int{}
+	for _, p := range prefixes {
+		if byProvider[p.Provider] == nil {
+			byProvider[p.Provider] = map[string]int{}
+		}
+		byProvider[p.Provider][p.Source]++
+	}
+	out := make([]cdnProviderCount, 0, len(byProvider))
+	for provider, sources := range byProvider {
+		c := cdnProviderCount{Provider: provider}
+		for source, n := range sources {
+			c.Count += n
+			c.Sources = append(c.Sources, cdnSourceCount{Source: source, Count: n})
+		}
+		slices.SortFunc(c.Sources, func(a, b cdnSourceCount) int { return cmp.Compare(a.Source, b.Source) })
+		out = append(out, c)
+	}
+	slices.SortFunc(out, func(a, b cdnProviderCount) int { return cmp.Compare(a.Provider, b.Provider) })
+	return out
 }
 
 func (s *server) createResolver(w http.ResponseWriter, r *http.Request) {
