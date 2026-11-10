@@ -24,6 +24,26 @@
 
   <section class="an-kpis" id="an-kpis" aria-label="Indicators"></section>
 
+  <section class="an-panel" id="an-linked" aria-labelledby="an-linked-title">
+    <div class="an-head">
+      <h2 id="an-linked-title">Linked campaigns</h2>
+      <a href="/correlations">Correlations</a>
+    </div>
+    {{with $.Data.Linked}}
+    <ul class="an-list">
+      {{range .}}
+      <li>
+        <a href="/correlations?a={{$.Data.Campaign.ID}}&amp;b={{.ID}}">{{.Name}}</a>
+        <span class="an-count">{{printf "%.2f" .Score}}</span>
+        <span class="an-dim an-mono">{{.Kinds}}</span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="an-dim">{{if $.Data.Correlated}}No link to another campaign.{{else}}Links not computed yet.{{end}}</p>
+    {{end}}
+  </section>
+
   <section class="an-panel" aria-labelledby="an-timeline-title">
     <div class="an-head">
       <h2 id="an-timeline-title">Events per day</h2>
