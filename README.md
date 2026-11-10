@@ -389,6 +389,9 @@ GET    /api/graph/campaign/{id}     graph of a campaign, 404 if unknown, see Gra
 GET    /api/graph/ip/{ip}           graph of an address, 400 if not one, see Graph view
 GET    /api/graph/ns/{set}          domains with exactly this NS set (comma-separated), see Graph view
 GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
+GET    /api/correlations[?min_score=&kinds=&since=]   links between campaigns, see Cross-campaign correlation
+GET    /api/correlations/{a}/{b}[?kinds=]   links of a pair of campaigns, 404 if one is unknown
+GET    /api/correlations/graph[?min_score=&kinds=&expand=a,b]   graph of the campaigns and their links
 GET    /api/vt/ip/{ip}              names VirusTotal saw on an address, cache only, see below
 GET    /api/vt/budget               VirusTotal lookups of the UTC day
 POST   /api/vt/enrich/domain/{fqdn}[?depth=]   analyst, enrichment job, see VirusTotal passive DNS
@@ -620,6 +623,86 @@ the name and its 20 latest events of the last 90 days; and
 `names` being the passive DNS owners of the address as in `/api/search`,
 `vt` as `/api/vt/ip/{ip}` (`null` without a VirusTotal key), 400 if `{ip}`
 is not an IP address.
+
+## Cross-campaign correlation
+
+A link joins two watched domains of two different campaigns through a piece
+of infrastructure they share. Domains outside any campaign and pairs within
+one campaign give no link. Only what Postgres and ClickHouse already hold is
+read; nothing is looked up.
+
+| Kind     | Weight   | Evidence |
+|----------|----------|----------|
+| `cert`   | 1.0      | the same `cert_sha256` among the certificates of the stored enrichments (`domain_enrich.ct`); the value is the full SHA-256, the period the validity of the certificate |
+| `ns_set` | 0.9      | the same current NS set (at least 2 nameservers, strictly equal) of two different zones |
+| `ip`     | 0.8 / n  | the same non-CDN A or AAAA value in passive DNS over overlapping periods; n counts the watched domains, of any campaign or none, that held the address during the overlap, and the link is dropped past n = 20 (shared hosting) |
+| `cname`  | 0.7      | the same CNAME target, unless a known CDN suffix or its chain in passive DNS ends on a CDN address |
+| `mx`     | 0.5      | the same MX exchange, unless a large mail provider |
+| `soa`    | 0.4      | the same SOA (mname, rname) of two different zones, unless the default of a large DNS provider |
+| `rdap`   | 0.3      | the same registrar (IANA id, else name) and registrations less than 48 h apart, of two different registrable domains (`domain_enrich.rdap`) |
+| `vt`     | 0.3      | a domain VirusTotal saw (`vt_resolutions`) on a non-CDN address another domain held in passive DNS, unless more than 20 watched domains held it |
+
+The weights are constants and the exclusions Go variables at the top of
+`internal/correlate/correlate.go`: `CNAMEProviders` (cloudfront.net,
+fastly.net, akamaiedge.net, edgekey.net, b-cdn.net, azureedge.net, cdn77.org,
+cloudflare.net…), `MXProviders` (google.com, googlemail.com, outlook.com,
+zoho.\*, yandex.\*, mail.ru, icloud.com…) and `SOADefaults`
+(ns.cloudflare.com, dns.cloudflare.com, awsdns-\*, azure-dns.\*,
+domaincontrol.com, registrar-servers.com…). A pattern matches a name by
+suffix or, ending in `.*`, by the first label of its registrable domain.
+A value held by more than 100 watched domains is left out as too common.
+
+The score of a pair of campaigns is 1 − Π(1 − w) over the distinct values
+(kind, value) its links share, each at the highest weight of its links,
+at most 1: a certificate gives 1, an NS set and an MX 0.95.
+
+`heimdall-api` computes the links a minute after start-up, then every hour,
+within 2 minutes: a longer run is abandoned and logged, leaving the history
+and the previous result. Postgres table `correlation_links` keeps the
+history, one row per (kind, value, domain_a, domain_b), `domain_a <
+domain_b`: a new link gets `first_seen`, every run that finds it again sets
+`last_seen` and its campaigns, and a link no longer found keeps its
+`last_seen`. Scores and weights are those of the last run, kept in memory:
+until the first run after a restart, `computed_at` is `null` and there is no
+pair.
+
+`/api/correlations` returns `{"campaigns": [{"id", "name"}], "pairs": [{"a",
+"b", "score", "counts", "first_seen", "last_seen"}], "new_links",
+"computed_at"}`: pairs with `a < b`, highest score first, `counts` the
+distinct values shared per kind, `first_seen` the first sighting of their
+oldest current link; `new_links` the links of the history first seen since
+`since` (7 days ago by default, same syntax as `/api/events`), at most 500,
+as `{"kind", "value", "domain_a", "campaign_a", "domain_b", "campaign_b",
+"first_seen", "last_seen"}`. `min_score` (0 to 1) keeps the pairs scoring at
+least that much, `kinds` (comma-separated) the links of those kinds, for the
+score too. A bad parameter is a 400.
+
+`/api/correlations/{a}/{b}` returns `{"a", "b", "score", "counts",
+"evidence", "past", "computed_at"}`: `evidence` the current links of the
+pair, highest weight then latest `first_seen` first, as `{"kind", "value",
+"domain_a", "campaign_a", "domain_b", "campaign_b", "weight", "period",
+"first_seen", "last_seen"}`, `period` (`{"first", "last"}`) being when both
+domains held the value, the validity of the certificate or the two
+registration dates, `null` otherwise; `past` the links of the history no
+longer found, latest `last_seen` first.
+
+`/api/correlations/graph` is a graph as in Graph view: a `campaign` node per
+linked campaign and an edge per kind of link between two of them, `kind`
+being the kind of link. `expand=a,b` adds the domains of the links between
+`a` and `b` (`member` edges to their campaign) and the values they share
+(`ip`, `nsset`, `domain` for a CNAME target or an MX exchange, `cert` labelled
+with the full SHA-256, `soa`, `registrar`), 404 if a campaign is unknown.
+
+`/correlations`, linked as "Correlations" in the navigation (`viewer`), shows
+the matrix of the linked campaigns (each cell coloured by score, with the
+values per kind; click one for the links of the pair, `?a=&b=` opens it), a
+Pivotick graph tab (edge colour per kind, click an edge to expand its pair),
+filters on the minimum score and the kinds, and the links first seen in the
+last 7 days. The browser reads `/correlations/data`,
+`/correlations/{a}/{b}/data` and `/correlations/graph/data` (session), which
+return the same JSON as the `/api/correlations` routes. The analytics page of
+a campaign has a "Linked campaigns" card with the 5 campaigns of highest
+score and a link to each pair.
 
 ## Search
 
