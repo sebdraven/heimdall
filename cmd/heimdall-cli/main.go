@@ -44,6 +44,7 @@ const usage = `usage: heimdall-cli <command> <action> [flags]
   cdn list
   cdn rm --id ID
   cdn import --file PATH --provider NAME
+  cdn-sync [-provider NAME]... [-asn ASN -as-provider NAME]... [-dry-run]
 
 Connects to Postgres using HEIMDALL_PG_DSN.
 `
@@ -69,6 +70,7 @@ var commands = map[string]command{
 	"cdn list":      cdnList,
 	"cdn rm":        cdnRm,
 	"cdn import":    cdnImport,
+	"cdn-sync":      cdnSyncCommand,
 }
 
 func main() {
@@ -76,12 +78,16 @@ func main() {
 }
 
 func run(args []string) int {
-	if len(args) < 2 {
+	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
-	name := args[0] + " " + args[1]
+	name, rest := args[0], args[1:]
 	cmd, ok := commands[name]
+	if !ok && len(args) >= 2 {
+		name, rest = args[0]+" "+args[1], args[2:]
+		cmd, ok = commands[name]
+	}
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", name, usage)
 		return 2
@@ -102,7 +108,7 @@ func run(args []string) int {
 	defer s.Close()
 
 	fs := flag.NewFlagSet("heimdall-cli "+name, flag.ContinueOnError)
-	if err := cmd(ctx, s, fs, args[2:]); err != nil {
+	if err := cmd(ctx, s, fs, rest); err != nil {
 		switch {
 		case errors.Is(err, flag.ErrHelp):
 			return 2
