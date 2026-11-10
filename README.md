@@ -14,7 +14,7 @@ Scope is strictly DNS: no ASN, certificate transparency or scanning.
 |----------------------|----------------------------------------------------------------------|
 | `heimdall-collector` | Scheduler, resolver workers, change detection and event classification |
 | `heimdall-api`       | HTTP API, htmx front end, Postgres migrations                        |
-| `heimdall-cli`       | Users, API tokens, watchlist import, resolvers, CDN prefixes         |
+| `heimdall-cli`       | Users, API tokens, watchlist import, resolvers, CDN prefixes and their sync |
 
 Postgres holds the watchlist, users and configuration; ClickHouse holds
 observations, passive DNS, changes and events.
@@ -73,8 +73,9 @@ apex shows the NS and SOA of its zone from passive DNS.
 Addresses of a CDN (Cloudflare, Fastly, Akamai…) are shared by unrelated
 names, so sharing one is not an infrastructure link. Postgres table
 `cdn_prefixes` lists their prefixes, seeded with the published Cloudflare
-ranges (`source` = `seed`); nothing is looked up outside DNS. Other providers
-are added by an admin on `/admin` or with the CLI:
+ranges (`source` = `seed`); nothing is looked up outside DNS unless
+`heimdall-cli cdn-sync` is run. Other providers are added by an admin on
+`/admin` or with the CLI:
 
 ```sh
 heimdall-cli cdn add --prefix 192.0.2.0/24 --provider Example
@@ -83,8 +84,44 @@ heimdall-cli cdn list
 heimdall-cli cdn rm --id 42
 ```
 
+`heimdall-cli cdn-sync` reads the official lists of the providers (30 s
+timeout per request, User-Agent `heimdall`):
+
+| `-provider`  | Provider   | Source                                                                 |
+|--------------|------------|------------------------------------------------------------------------|
+| `cloudflare` | Cloudflare | `https://www.cloudflare.com/ips-v4` and `ips-v6`, one prefix per line  |
+| `fastly`     | Fastly     | `https://api.fastly.com/public-ip-list`, `addresses` and `ipv6_addresses` |
+| `cloudfront` | CloudFront | `https://ip-ranges.amazonaws.com/ip-ranges.json`, service `CLOUDFRONT` of `prefixes` (`ip_prefix`) and `ipv6_prefixes` (`ipv6_prefix`) |
+| `bunny`      | Bunny      | `https://bunnycdn.com/api/system/edgeserverlist` and `/IPv6`, JSON arrays of addresses, each a /32 or /128 |
+
+```sh
+heimdall-cli cdn-sync                                  # every provider above
+heimdall-cli cdn-sync -provider fastly -provider bunny -dry-run
+heimdall-cli cdn-sync -provider cloudflare -asn 64500 -as-provider ExampleCDN
+```
+
+Each provider is synced in its own transaction under the source
+`sync:<provider>`: the listed prefixes no row holds are added, the
+`sync:<provider>` rows no longer listed are removed, and the `seed`,
+`manual`, `import:…` and other providers' rows are never touched (a listed
+prefix they already hold is counted as "already listed by another
+source"). The report gives, per provider, the prefixes added, removed and
+unchanged; `-dry-run` writes nothing. A list that fails to download or parse,
+or is empty, leaves that provider as it was; the others are still synced and
+the command exits 1.
+
+`-asn N -as-provider NAME`, repeatable, syncs the prefixes the AS announces
+according to RIPEstat
+(`https://stat.ripe.net/data/announced-prefixes/data.json?resource=ASN`)
+under `sync:<name>`, only when asked and in addition to the providers above
+(all of them without `-provider`). **An AS often announces hosting that is not
+a CDN**: every address in it is then left out of sharing counts, pivots and
+correlation, so the command prints a warning. `NAME` may not be that of a
+built-in provider.
+
 The API loads the prefixes at start-up and reloads them every 60 s (at once
-after a change on `/admin`). Only IP values are classified. A CDN address is
+after a change on `/admin`), so a sync applies within a minute without a
+restart. `/admin` counts the prefixes per provider and per source. Only IP values are classified. A CDN address is
 marked "CDN <provider>" in Current state, the change timeline and search,
 gets no sharing badge, and its `/rdata/` page says so. Pivots leave out the
 A/AAAA values that are CDN addresses.
