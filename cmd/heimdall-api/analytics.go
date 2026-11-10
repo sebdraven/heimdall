@@ -603,9 +603,13 @@ func (s *server) apiAnalytics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
+// analyticsView is what analytics.html shows. Linked are the campaigns of
+// highest score linked to it, Correlated whether the links were computed.
 type analyticsView struct {
-	Campaign pg.Campaign
-	Days     int
+	Campaign   pg.Campaign
+	Days       int
+	Linked     []linkedCampaign
+	Correlated bool
 }
 
 func (s *server) analyticsPage(w http.ResponseWriter, r *http.Request) {
@@ -619,7 +623,12 @@ func (s *server) analyticsPage(w http.ResponseWriter, r *http.Request) {
 		s.storeFail(w, r, err)
 		return
 	}
-	s.render(w, r, "analytics", http.StatusOK, analyticsView{Campaign: c, Days: analyticsDays(r)})
+	v := analyticsView{Campaign: c, Days: analyticsDays(r)}
+	if v.Linked, v.Correlated, err = s.linkedCampaigns(r.Context(), id); err != nil {
+		s.storeFail(w, r, err)
+		return
+	}
+	s.render(w, r, "analytics", http.StatusOK, v)
 }
 
 // entityDomainJSON is the side panel of a name on the analytics page.

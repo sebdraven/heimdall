@@ -1,0 +1,61 @@
+{{define "title"}}Correlations · Heimdall{{end}}
+{{define "head"}}
+<link rel="stylesheet" href="/static/vendor/pivotick/pivotick.css">
+<link rel="stylesheet" href="/static/correlations.css">
+<script src="/static/vendor/pivotick/pivotick.iife.js" defer></script>
+<script src="/static/correlations.js" defer></script>
+{{end}}
+{{define "content"}}
+<div class="cx" id="correlations" data-source="/correlations/data" data-graph="/correlations/graph/data" data-pair="/correlations/">
+  <div class="graph-bar">
+    <h1>Correlations</h1>
+    <span class="meta" id="cx-computed"></span>
+    <span class="cx-tabs" role="tablist">
+      <button type="button" role="tab" id="cx-tab-matrix" aria-selected="true" aria-controls="cx-matrix-panel">Matrix</button>
+      <button type="button" role="tab" id="cx-tab-graph" aria-selected="false" aria-controls="cx-graph-panel">Graph</button>
+    </span>
+  </div>
+  <form class="inline cx-filters" id="cx-filters">
+    <label>Min score <input type="number" id="cx-min" min="0" max="1" step="0.05" value="0"></label>
+    {{range .Data.Kinds}}
+    <label class="cx-kind"><input type="checkbox" name="kind" value="{{.Kind}}" checked> <span class="swatch-line cx-line-{{.Kind}}"></span>{{.Kind}} <span class="meta">{{.Weight}}</span></label>
+    {{end}}
+  </form>
+  <p class="meta">Links between domains of different campaigns. A pair scores 1 − Π(1 − weight) over the distinct values it shares; cells count them by kind.</p>
+  <p class="error" id="cx-error" role="alert" hidden></p>
+
+  <section id="cx-matrix-panel" role="tabpanel" aria-labelledby="cx-tab-matrix">
+    <div class="cx-scroll"><table class="cx-matrix" id="cx-matrix"></table></div>
+    <p class="empty" id="cx-empty" hidden></p>
+  </section>
+
+  <section id="cx-graph-panel" role="tabpanel" aria-labelledby="cx-tab-graph" hidden>
+    <ul class="legend">
+      <li><span class="swatch cx-swatch-campaign"></span>campaign</li>
+      <li><span class="swatch swatch-domain-watched"></span>domain</li>
+      {{range .Data.Kinds}}<li><span class="swatch-line cx-line-{{.Kind}}"></span>{{.Kind}}</li>{{end}}
+    </ul>
+    <p class="meta">click an edge or a cell of the matrix: show the domains and values shared by the pair</p>
+    <p class="notice" id="cx-graph-pair" hidden></p>
+    <p class="notice" id="cx-graph-truncated" hidden>truncated at {{.Data.MaxNodes}} nodes</p>
+    <div id="cx-graph" class="graph-canvas cx-canvas"></div>
+  </section>
+
+  <aside class="cx-panel" id="cx-pair" aria-labelledby="cx-pair-title" tabindex="-1" hidden>
+    <div class="cx-panel-head">
+      <h2 id="cx-pair-title"></h2>
+      <button type="button" id="cx-pair-graph">Show in graph</button>
+      <button type="button" id="cx-pair-close" aria-label="Close">×</button>
+    </div>
+    <div id="cx-pair-body"></div>
+  </aside>
+
+  <h2>New links (7 days)</h2>
+  <div class="cx-scroll">
+    <table class="cx-links">
+      <thead><tr><th>First seen (UTC)</th><th>Kind</th><th>Value</th><th>Domain</th><th>Campaign</th><th>Domain</th><th>Campaign</th></tr></thead>
+      <tbody id="cx-new"></tbody>
+    </table>
+  </div>
+</div>
+{{end}}

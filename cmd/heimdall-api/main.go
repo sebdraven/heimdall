@@ -59,6 +59,7 @@ func run() error {
 	}
 	go srv.housekeeping(ctx)
 	go srv.reloadCDN(ctx)
+	go srv.correlateLoop(ctx)
 
 	hs := &http.Server{
 		Addr:              cfg.Listen,

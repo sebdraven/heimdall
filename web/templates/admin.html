@@ -63,7 +63,21 @@
 </form>
 
 <h2>CDN prefixes</h2>
-<p class="meta">Addresses in these prefixes are marked CDN and left out of sharing counts and pivots.</p>
+<p class="meta">Addresses in these prefixes are marked CDN and left out of sharing counts and pivots. <code>heimdall-cli cdn-sync</code> keeps the <code>sync:&lt;provider&gt;</code> ones up to date.</p>
+<table>
+  <thead><tr><th>Provider</th><th>Prefixes</th><th>By source</th></tr></thead>
+  <tbody>
+  {{range .Data.CDNProviders}}
+    <tr>
+      <td>{{.Provider}}</td>
+      <td>{{.Count}}</td>
+      <td>{{range $i, $s := .Sources}}{{if $i}}, {{end}}<code>{{$s.Source}}</code> {{$s.Count}}{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="3" class="empty">No CDN prefixes.</td></tr>
+  {{end}}
+  </tbody>
+</table>
 <table>
   <thead><tr><th>Prefix</th><th>Provider</th><th>Source</th><th>Added (UTC)</th><th></th></tr></thead>
   <tbody>
