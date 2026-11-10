@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sebdraven/heimdall/internal/auth"
@@ -30,7 +31,7 @@ import (
 
 const maxBody = 1 << 20
 
-var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin", "graph", "analytics"}
+var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin", "graph", "analytics", "correlations"}
 
 type server struct {
 	cfg       *config.Config
@@ -51,8 +52,11 @@ type server struct {
 	enrichDB   enrichStore
 	links      linkStore
 	audits     auditStore
-	pages      map[string]*template.Template
-	now        func() time.Time
+	corr       correlationStores
+	// corrSnap is nil until the first correlation.
+	corrSnap atomic.Pointer[correlationSnapshot]
+	pages    map[string]*template.Template
+	now      func() time.Time
 }
 
 // auditStore writes the audit log.
@@ -113,6 +117,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: enrich.NewCTClient(cfg.CTURL, cfg.CertSpotterAPIKey), PDNS: chs,
 	}
 	s.enrichJobs, s.enrichDB, s.links = newJobs[enrichSummary](), pgs, pgs
+	s.corr = correlationStores{chs, pgs}
 	return s, nil
 }
 
@@ -165,6 +170,10 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /graph/ip/{ip}/data", page(viewer, s.apiGraphIP))
 	mux.Handle("GET /graph/ns/{set}/data", page(viewer, s.apiGraphNS))
 	mux.Handle("GET /events", page(viewer, s.eventsPage))
+	mux.Handle("GET /correlations", page(viewer, s.correlationsPage))
+	mux.Handle("GET /correlations/data", page(viewer, s.apiCorrelations))
+	mux.Handle("GET /correlations/graph/data", page(viewer, s.apiCorrelationGraph))
+	mux.Handle("GET /correlations/{a}/{b}/data", page(viewer, s.apiCorrelationPair))
 	mux.Handle("GET /admin", page(admin, s.adminPage))
 	mux.Handle("POST /admin/resolvers", page(admin, s.createResolver))
 	mux.Handle("POST /admin/resolvers/{id}/toggle", page(admin, s.toggleResolver))
@@ -194,6 +203,9 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/graph/ip/{ip}", api(viewer, s.apiGraphIP))
 	mux.Handle("GET /api/graph/ns/{set}", api(viewer, s.apiGraphNS))
 	mux.Handle("GET /api/search", api(viewer, s.apiSearch))
+	mux.Handle("GET /api/correlations", api(viewer, s.apiCorrelations))
+	mux.Handle("GET /api/correlations/graph", api(viewer, s.apiCorrelationGraph))
+	mux.Handle("GET /api/correlations/{a}/{b}", api(viewer, s.apiCorrelationPair))
 	mux.Handle("GET /api/vt/ip/{ip}", api(viewer, s.apiVTIP))
 	mux.Handle("GET /api/vt/budget", api(viewer, s.apiVTBudget))
 	mux.Handle("POST /api/vt/enrich/domain/{fqdn}", api(analyst, s.enrichGraphDomain))
