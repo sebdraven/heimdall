@@ -22,6 +22,9 @@
     <li><span class="swatch swatch-domain"></span>domain unwatched</li>
     <li><span class="swatch swatch-ip"></span>ip</li>
     <li><span class="swatch swatch-nsset"></span>nsset</li>
+    <li><span class="swatch-line swatch-addr"></span>A/AAAA</li>
+    <li><span class="swatch-line swatch-cname"></span>CNAME</li>
+    <li><span class="swatch-line swatch-nsset-line"></span>NS_SET</li>
     <li><span class="swatch-line swatch-mx"></span>MX</li>
     <li><span class="swatch-line swatch-cert"></span>CERT: name of a certificate</li>
     <li><span class="swatch-line swatch-sub"></span>SUB: subdomain</li>
@@ -29,8 +32,9 @@
     <li><span class="swatch swatch-vt-node"></span>seen by VirusTotal only</li>
     <li><span class="swatch-line swatch-vt"></span>VirusTotal resolution</li>
     {{end}}
+    <li><span class="swatch-line swatch-mixed"></span>dashed grey: path through a grouped node, mixed types (see its tooltip); a path of a single type keeps its colour</li>
   </ul>
-  <p class="meta">click: expand the neighbours · right click: actions</p>
+  <p class="meta">click: expand the neighbours · click a group: list of its members · right click: actions</p>
   <p class="notice" id="graph-expand" aria-live="polite" hidden></p>
   <p class="notice" id="graph-cdn" hidden><span id="graph-cdn-count"></span> CDN addresses left out</p>
   <p class="notice" id="graph-truncated" hidden>truncated at {{.Data.MaxNodes}} nodes</p>
@@ -42,6 +46,15 @@
 <p class="notice">CDN address ({{.}}): sharing it is not an infrastructure link</p>
 {{else}}
 <div id="graph" class="graph-canvas" data-source="{{.Data.Source}}"{{if .Data.VT}} data-vt="1"{{end}}{{if $.Can "analyst"}} data-analyst="1" data-csrf="{{$.CSRF}}"{{end}}></div>
+<aside id="graph-group" class="graph-group" aria-labelledby="graph-group-title" hidden>
+  <div class="graph-group-head">
+    <h2 id="graph-group-title"></h2>
+    <button type="button" id="graph-group-close" aria-label="Close">×</button>
+  </div>
+  <input type="search" id="graph-group-filter" placeholder="Filter" aria-label="Filter the members">
+  <p class="meta" id="graph-group-count" aria-live="polite"></p>
+  <ul class="graph-group-list" id="graph-group-list"></ul>
+</aside>
 {{if $.Can "analyst"}}{{template "link_dialog" $}}{{end}}
 {{end}}
 {{end}}

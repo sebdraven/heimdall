@@ -15,7 +15,8 @@
   --graph-vt-node: #b39ddb;
   --graph-mx: #3d8b5f;
   --graph-cert: #c2185b;
-  --graph-sub: #5c6bc0;
+  --graph-sub: #26a69a;
+  --graph-mixed: #b0b4b8;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -147,4 +148,37 @@ main:has(> .graph-canvas) { max-width: none; padding-bottom: 1rem; }
 .swatch-mx { border-top: 2px solid var(--graph-mx); }
 .swatch-cert { border-top: 2px dashed var(--graph-cert); }
 .swatch-sub { border-top: 2px solid var(--graph-sub); }
+.swatch-addr { border-top: 2px solid var(--graph-ip); }
+.swatch-cname { border-top: 2px solid var(--graph-domain); }
+.swatch-nsset-line { border-top: 2px solid var(--graph-nsset); }
+.swatch-mixed { border-top: 2px dashed var(--graph-mixed); }
 .graph-canvas { position: relative; height: calc(100vh - 8.5rem); min-height: 24rem; border: 1px solid var(--line); border-radius: 4px; }
+.graph-edge-path { display: grid; gap: .15rem; font-family: ui-monospace, monospace; font-size: 12px; white-space: nowrap; }
+
+/* Members of a group node: a side panel over the graph, which stays usable. */
+.graph-group {
+  position: fixed;
+  top: 6rem;
+  right: 1.5rem;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  width: min(24rem, 90vw);
+  max-height: calc(100vh - 8rem);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  box-shadow: 0 4px 16px rgb(0 0 0 / .2);
+}
+.graph-group[hidden] { display: none; }
+.graph-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.graph-group-head h2 { margin: 0; font-size: 1.05rem; overflow-wrap: anywhere; }
+.graph-group input { width: 100%; }
+.graph-group p { margin: 0; }
+.graph-group-list { flex: 1; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.graph-group-list li { display: flex; align-items: center; gap: .4rem; padding: .2rem 0; border-bottom: 1px solid var(--line); }
+.graph-group-member { flex: 1; min-width: 0; text-align: left; border: 0; padding: .1rem .2rem; overflow-wrap: anywhere; }
+.graph-group-watched { display: inline-block; flex: none; width: .55rem; height: .55rem; border-radius: 50%; background: var(--graph-domain-watched); }

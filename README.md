@@ -552,7 +552,8 @@ node also brings the graph of its last enrichment
 (`/domains/{fqdn}/enrich/data`, none before the first one). Clicking
 an NS set node expands it the same way with the domains whose current NS
 set is identical (`/graph/ns/{set}/data`). An expanded node gets a thicker
-border and is not read again. Other nodes do nothing on click. The context
+border and is not read again. A group node opens the list of its members
+(see below); other nodes do nothing on click. The context
 menu (right click) of a domain or IP node has "Open page" (`/domains/{fqdn}`
 or `/rdata/{ip}`). For an `analyst`, that of a domain node also has
 "Enrich", which starts the domain enrichment, follows it in the graph bar
@@ -563,6 +564,30 @@ node is drawn watched, and a campaign created there is offered at once in
 the dialog. The graph opens
 simplified: nodes with the same neighbours are grouped into one, which the
 Simplify panel of the side rail turns off or combines with its other rules.
+
+An edge that runs through a grouped node is drawn by Pivotick as a synthetic
+edge standing for the real ones. It keeps the colour of their kind when they
+share one; when their kinds differ it is dashed grey (`MIXED`). Its tooltip,
+and the properties panel, give the real path, one line per edge: `from → to
+(KIND)`, with the first and last day seen of a `VT` edge. Every edge kind of
+Heimdall has its own colour (`A`/`AAAA` as addresses, `CNAME` grey,
+`NS_SET` as NS sets, `MX`, `CERT`, `SUB` teal, `VT`), none the default
+Pivotick blue.
+
+Clicking a group node opens a side panel over the graph, which stays usable:
+the label of the group and its number of members, a filter on the labels
+(case-insensitive, as one types), and the members sorted by type then
+label, each with its type (`domain`, `ip`, `nsset`, `vt`), a red dot when
+watched, and a "page" link to its page in a new tab. Clicking a member
+opens the groups that hide it, selects it and centres the graph on it (its
+page opens instead if that fails). The × button or Escape closes the panel.
+
+The "VirusTotal" box is remembered per graph page (its path, as
+`/graph/campaign/4`) in the browser's `localStorage`. A page opened without
+`vt` in its URL reloads once with `vt=1` when the box was last checked
+there; a `vt` in the URL wins and becomes the remembered choice. Without
+`localStorage`, nothing is remembered.
+
 The browser reads the graph from `/graph/domain/{fqdn}/data` and
 `/graph/campaign/{id}/data`, which return the
 same JSON as `/api/graph/...` under the session cookie, since `/api` only
