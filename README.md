@@ -255,30 +255,56 @@ once:
   entity; no email address or phone number. 15 second timeout.
 - Certificate Transparency, from Cert Spotter (SSLMate):
   `GET {HEIMDALL_CT_URL}/v1/issuances?domain={zone}&include_subdomains=true&expand=dns_names&expand=issuer`,
-  then `&after=<id of the last issuance>` until an empty page or 500
-  certificates (`truncated` when it stops there), 30 seconds in all. Kept
-  per certificate: the Cert Spotter issuance id, the full SHA-256 of the
-  certificate (`cert_sha256`, hex), the issuer (friendly name, else name),
-  the validity, whether it is revoked and its DNS names (lowercased, without
-  final dot, wildcards kept), latest `not_before` first; and the union of
-  the names. An HTTP 429 fails the source with `cert spotter rate limited`
-  (and the `Retry-After`, if any); the certificates already read are not
-  kept.
+  then `&after=<id of the last issuance>` until a page of less than 100
+  issuances or 500 certificates (`truncated` when it stops there), 30
+  seconds in all. Kept per certificate: the Cert Spotter issuance id, the
+  full SHA-256 of the certificate (`cert_sha256`, hex), the issuer (friendly
+  name, else name), the validity, whether it is revoked and its DNS names
+  (lowercased, without final dot, wildcards kept), latest `not_before`
+  first; and the union of the names. An HTTP 429 gives `cert spotter rate
+  limited`, or `cert spotter full-domain query quota exhausted` when the
+  answer says so, with the `Retry-After`, if any; the certificates read
+  before it are kept, `truncated`.
+
+  With `HEIMDALL_ONYPHE_API_KEY`, ONYPHE is searched at the same time:
+  `GET {HEIMDALL_ONYPHE_URL}/search/?q=category:ctl domain:{domain} {HEIMDALL_ONYPHE_CT_WINDOW}&page=N`
+  with `Authorization: bearer <key>`, up to `max_page` or 500 certificates.
+  `{domain}` is the registrable domain of the zone, under which ONYPHE files
+  a certificate; below it, only the certificates with a name within the zone
+  are kept. Per certificate: `fingerprint.sha256` (lowercased, in full; a
+  result without it is skipped), the names of `subject.altname` and
+  `hostname`, the issuer (`commonname`, else `organization`) and the
+  validity. A 429 gives `onyphe rate limited` (and the `Retry-After`), with
+  the certificates already read, as for Cert Spotter.
+
+  The two are merged by full SHA-256, never by a prefix: one certificate,
+  the union of the names, `sources` (`certspotter`, `onyphe`), and the id,
+  issuer and validity of Cert Spotter, else of ONYPHE. A partial answer is
+  merged too; the errors of both are joined, `; ` between them, in
+  `errors.ct`. `truncated` is set when either search is, or when the union
+  passes 500 certificates, the latest being kept.
 - Subdomains: the names below the zone in Heimdall's passive DNS
   (ClickHouse only), with first and last seen, at most 500, latest first.
 
 CT and subdomains search below the zone found by DNS when it lies within the
-registrable domain, else below the registrable domain. RDAP and Cert
-Spotter are called by `heimdall-api`, with the `User-Agent` `heimdall`.
+registrable domain, else below the registrable domain. RDAP, Cert Spotter
+and ONYPHE are called by `heimdall-api`, with the `User-Agent` `heimdall`.
 
-| Variable                       | Default                       | Meaning                                           |
-|--------------------------------|-------------------------------|---------------------------------------------------|
-| `HEIMDALL_CT_URL`              | `https://api.certspotter.com` | Cert Spotter API                                  |
-| `HEIMDALL_CERTSPOTTER_API_KEY` | empty                         | Cert Spotter key, sent as `Authorization: Bearer` |
+| Variable                       | Default                        | Meaning                                                |
+|--------------------------------|--------------------------------|--------------------------------------------------------|
+| `HEIMDALL_CT_URL`              | `https://api.certspotter.com`  | Cert Spotter API                                       |
+| `HEIMDALL_CERTSPOTTER_API_KEY` | empty                          | Cert Spotter key, sent as `Authorization: Bearer`      |
+| `HEIMDALL_ONYPHE_API_KEY`      | empty                          | ONYPHE key, sent as `Authorization: bearer`; empty: no ONYPHE search |
+| `HEIMDALL_ONYPHE_URL`          | `https://www.onyphe.io/api/v2` | ONYPHE API                                             |
+| `HEIMDALL_ONYPHE_CT_WINDOW`    | `-since:48M`                   | OQL time function of the search                        |
 
 Without a key, the public Cert Spotter API limits the number of requests,
 and each page of a search is one request: enrichments may then fail with
 `cert spotter rate limited`.
+
+Without a time function ONYPHE searches the last 30 days. `-since:48M` asks
+for the last 48 months, as far as the license allows; `-monthago:N` would
+be the single calendar month N months ago.
 
 `POST /domains/{fqdn}/enrich` (session, `analyst`, CSRF token) starts the
 enrichment in the background, for at most 2 minutes, and answers `202` with
@@ -307,9 +333,9 @@ as its base name).
 
 `/domains/{fqdn}` has an "Enrichment" section after VirusTotal: the date,
 the resolver, the records, the zone (SOA, NS), RDAP, the certificates
-("Certificate Transparency (Cert Spotter)": count, full SHA-256, issuer,
-validity, revocation, names; "—" for the SHA-256 of an enrichment stored
-before Cert Spotter), the
+("Certificate Transparency": count, full SHA-256, issuer, validity,
+revocation, names, sources; "—" for the SHA-256 of an enrichment stored
+before Cert Spotter, and for the sources of one stored before ONYPHE), the
 subdomains, linked to their page, and the error of each failed source. Its
 "Enrich" button (`analyst`) starts the job, follows it with
 `web/static/vtjob.js` and reloads the page at the end.

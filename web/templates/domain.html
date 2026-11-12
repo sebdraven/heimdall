@@ -165,10 +165,10 @@
 </table>
 {{end}}
 {{with .CT}}
-<h3>Certificate Transparency (Cert Spotter)</h3>
+<h3>Certificate Transparency</h3>
 <p class="meta">{{.Total}} certificates for {{.Zone}} and its subdomains, {{len .Names}} names{{if .Truncated}}; the search stopped at {{len .Certificates}}{{end}}</p>
 <table>
-  <thead><tr><th>SHA-256</th><th>Issuer</th><th>Validity (UTC)</th><th>Revoked</th><th>Names</th></tr></thead>
+  <thead><tr><th>SHA-256</th><th>Issuer</th><th>Validity (UTC)</th><th>Revoked</th><th>Names</th><th>Sources</th></tr></thead>
   <tbody>
   {{range .Certificates}}
     <tr>
@@ -177,9 +177,10 @@
       <td class="nowrap">{{ts .NotBefore}} → {{ts .NotAfter}}</td>
       <td>{{if .Revoked}}<span class="error">revoked</span>{{else}}no{{end}}</td>
       <td>{{range .Names}}<code>{{.}}</code><br>{{end}}</td>
+      <td>{{range $i, $s := .Sources}}{{if $i}}, {{end}}{{$s}}{{else}}—{{end}}</td>
     </tr>
   {{else}}
-    <tr><td colspan="5" class="empty">No certificate logged.</td></tr>
+    <tr><td colspan="6" class="empty">No certificate logged.</td></tr>
   {{end}}
   </tbody>
 </table>

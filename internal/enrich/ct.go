@@ -26,8 +26,10 @@ const (
 	ctPageSize = 100
 )
 
-// Certificate is a Cert Spotter issuance. CertSHA256 is empty for an
-// enrichment stored before Cert Spotter.
+// Certificate is a logged certificate. ID is the Cert Spotter issuance id,
+// empty for one found by ONYPHE alone; CertSHA256 is empty for an
+// enrichment stored before Cert Spotter. Sources names the CT sources that
+// found it.
 type Certificate struct {
 	ID         string    `json:"id"`
 	CertSHA256 string    `json:"cert_sha256"`
@@ -36,6 +38,7 @@ type Certificate struct {
 	NotAfter   time.Time `json:"not_after"`
 	Revoked    bool      `json:"revoked"`
 	Names      []string  `json:"names"`
+	Sources    []string  `json:"sources,omitempty"`
 }
 
 // UnmarshalJSON also reads the numeric id of a certificate stored before
@@ -150,9 +153,7 @@ func (out *CT) finish() *CT {
 	if len(out.Certificates) > MaxCertificates {
 		out.Certificates = out.Certificates[:MaxCertificates]
 	}
-	slices.SortStableFunc(out.Certificates, func(a, b Certificate) int {
-		return cmp.Or(b.NotBefore.Compare(a.NotBefore), cmp.Compare(a.ID, b.ID))
-	})
+	slices.SortStableFunc(out.Certificates, latestFirst)
 	names := map[string]bool{}
 	for _, cert := range out.Certificates {
 		for _, n := range cert.Names {
@@ -165,6 +166,10 @@ func (out *CT) finish() *CT {
 	}
 	out.Total = len(out.Certificates)
 	return out
+}
+
+func latestFirst(a, b Certificate) int {
+	return cmp.Or(b.NotBefore.Compare(a.NotBefore), cmp.Compare(a.ID, b.ID))
 }
 
 func (c *CTClient) issuancesURL(zone, after string) string {
