@@ -18,16 +18,24 @@
     return res.json();
   };
 
-  const withVT = (on) => {
+  // withParam returns the page URL with name=value, without name if value
+  // is ''.
+  const withParam = (name, value) => {
     const u = new URL(window.location.href);
-    if (on) u.searchParams.set('vt', '1');
-    else u.searchParams.delete('vt');
+    if (value) u.searchParams.set(name, value);
+    else u.searchParams.delete(name);
     return u.toString();
   };
+
+  const withVT = (on) => withParam('vt', on ? '1' : '');
 
   const vtControls = () => {
     const toggle = document.getElementById('graph-vt-toggle');
     if (toggle) toggle.addEventListener('change', () => window.location.assign(withVT(toggle.checked)));
+
+    // Subdomains are on by default: only subs=0 is kept in the URL.
+    const subs = document.getElementById('graph-subs-toggle');
+    if (subs) subs.addEventListener('change', () => window.location.assign(withParam('subs', subs.checked ? '' : '0')));
 
     const summary = document.getElementById('graph-vt-summary');
     if (summary && window.heimdallVTJob) {
@@ -83,7 +91,9 @@
 
   const isAnalyst = box.dataset.analyst === '1';
   const canEnrich = box.dataset.vt === '1' && isAnalyst;
-  const pageVT = new URL(box.dataset.source, window.location.href).searchParams.get('vt') === '1';
+  const sourceParams = new URL(box.dataset.source, window.location.href).searchParams;
+  const pageVT = sourceParams.get('vt') === '1';
+  const pageSubs = sourceParams.get('subs') !== '0';
   const maxExpand = 50;
   const expandedStyle = { strokeWidth: 4, strokeColor: color('--fg') };
 
@@ -108,14 +118,20 @@
     node.setStyle(on ? { ...style, ...expandedStyle } : style);
   };
 
+  // expandURL reads the graph of node; that of a domain has its SUB edges
+  // unless the page has none, and merge keeps them.
   const expandURL = (node) => {
     const nsset = dataOf(node).nsset;
     if (nsset) return `/graph/ns/${encodeURIComponent(nsset)}/data`;
     let path = '';
     if (ipOf(node)) path = `/graph/ip/${encodeURIComponent(ipOf(node))}/data`;
     else if (fqdnOf(node)) path = `/graph/domain/${encodeURIComponent(fqdnOf(node))}/data`;
-    if (path && (pageVT || enriched.has(node.id))) path += '?vt=1';
-    return path;
+    if (!path) return '';
+    const params = new URLSearchParams();
+    if (pageVT || enriched.has(node.id)) params.set('vt', '1');
+    if (!pageSubs && fqdnOf(node)) params.set('subs', '0');
+    const query = params.toString();
+    return query ? `${path}?${query}` : path;
   };
 
   // around places the i-th of count new nodes on a ring around node.

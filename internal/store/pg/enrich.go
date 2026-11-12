@@ -54,6 +54,34 @@ func (s *Store) DomainEnrich(ctx context.Context, fqdn string) (enrich.Result, e
 		fromJSON(ct, &r.CT), fromJSON(subs, &r.Subdomains))
 }
 
+// DomainEnrichments returns, by name, the last enrichment of those of fqdns
+// that have one, reduced to the sources that name subdomains: CT without
+// its certificates, and the subdomains.
+func (s *Store) DomainEnrichments(ctx context.Context, fqdns []string) (map[string]enrich.Result, error) {
+	out := map[string]enrich.Result{}
+	if len(fqdns) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT fqdn, fetched_at, status, ct - 'certificates', subdomains FROM domain_enrich WHERE fqdn = ANY($1)`, fqdns)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r enrich.Result
+		var ct, subs []byte
+		if err := rows.Scan(&r.FQDN, &r.FetchedAt, &r.Status, &ct, &subs); err != nil {
+			return nil, mapErr(err)
+		}
+		if err := errors.Join(fromJSON(ct, &r.CT), fromJSON(subs, &r.Subdomains)); err != nil {
+			return nil, err
+		}
+		out[r.FQDN] = r
+	}
+	return out, mapErr(rows.Err())
+}
+
 func jsonOrNull[T any](v *T) ([]byte, error) {
 	if v == nil {
 		return nil, nil

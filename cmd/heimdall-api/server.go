@@ -34,16 +34,17 @@ const maxBody = 1 << 20
 var pageNames = []string{"login", "error", "campaigns", "campaign", "domain", "rdata", "search", "events", "admin", "graph", "analytics", "correlations"}
 
 type server struct {
-	cfg       *config.Config
-	log       *slog.Logger
-	pg        *pg.Store
-	ch        *ch.Store
-	auth      *auth.Manager
-	ipLim     *auth.Limiter
-	usLim     *auth.Limiter
-	cdn       *cdn.Classifier
-	graph     graphStores
-	analytics analyticsStores
+	cfg        *config.Config
+	log        *slog.Logger
+	pg         *pg.Store
+	ch         *ch.Store
+	auth       *auth.Manager
+	ipLim      *auth.Limiter
+	usLim      *auth.Limiter
+	cdn        *cdn.Classifier
+	graph      graphStores
+	subdomains subdomainStore
+	analytics  analyticsStores
 	// vt is nil without HEIMDALL_VT_API_KEY.
 	vt         *vt.Enricher
 	vtJobs     *jobs[vt.Summary]
@@ -120,7 +121,7 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 	s.enrich = &enrich.Enricher{
 		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: ct, PDNS: chs,
 	}
-	s.enrichJobs, s.enrichDB, s.links = newJobs[enrichSummary](), pgs, pgs
+	s.enrichJobs, s.enrichDB, s.links, s.subdomains = newJobs[enrichSummary](), pgs, pgs, pgs
 	s.corr = correlationStores{chs, pgs}
 	return s, nil
 }

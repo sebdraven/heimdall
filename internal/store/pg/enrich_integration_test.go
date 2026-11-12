@@ -107,3 +107,47 @@ func TestDomainEnrichRoundTrip(t *testing.T) {
 		t.Errorf("unknown status: err = %v, want ErrInvalid", err)
 	}
 }
+
+func TestDomainEnrichments(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+
+	if got, err := s.DomainEnrichments(ctx, nil); err != nil || len(got) != 0 {
+		t.Fatalf("no name: %v, %v", got, err)
+	}
+	for _, r := range []enrich.Result{
+		{FQDN: "x.example", FetchedAt: at, Status: enrich.StatusOK,
+			DNS: &enrich.DNS{Resolver: "9.9.9.9:53"},
+			CT: &enrich.CT{Zone: "x.example", Total: 1, Certificates: []enrich.Certificate{{ID: "7", CertSHA256: strings.Repeat("ab", 32), Names: []string{"*.x.example"}}},
+				Names: []string{"*.x.example", "mail.x.example"}, Truncated: true},
+			Subdomains: &enrich.Subdomains{Zone: "x.example", Names: []enrich.Subdomain{{Name: "www.x.example", FirstSeen: at, LastSeen: at}}}},
+		{FQDN: "y.example", FetchedAt: at, Status: enrich.StatusError, Errors: map[string]string{enrich.SourceCT: "cert spotter: HTTP 502"}},
+	} {
+		if err := s.SaveDomainEnrich(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.DomainEnrichments(ctx, []string{"x.example", "y.example", "z.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d enrichments, want x.example and y.example: %+v", len(got), got)
+	}
+	x := got["x.example"]
+	if x.FQDN != "x.example" || !x.FetchedAt.Equal(at) || x.Status != enrich.StatusOK || x.DNS != nil {
+		t.Errorf("x.example %+v", x)
+	}
+	if x.CT == nil || x.CT.Zone != "x.example" || !x.CT.Truncated || x.CT.Certificates != nil ||
+		strings.Join(x.CT.Names, " ") != "*.x.example mail.x.example" {
+		t.Errorf("ct %+v, want the names without the certificates", x.CT)
+	}
+	if x.Subdomains == nil || len(x.Subdomains.Names) != 1 || x.Subdomains.Names[0].Name != "www.x.example" || !x.Subdomains.Names[0].LastSeen.Equal(at) {
+		t.Errorf("subdomains %+v", x.Subdomains)
+	}
+	if y := got["y.example"]; y.CT != nil || y.Subdomains != nil || y.Status != enrich.StatusError {
+		t.Errorf("y.example %+v, want no source", y)
+	}
+}
