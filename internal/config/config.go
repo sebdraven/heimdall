@@ -40,6 +40,9 @@ type Config struct {
 
 	CTURL             string
 	CertSpotterAPIKey string
+	OnypheAPIKey      string
+	OnypheURL         string
+	OnypheCTWindow    string
 
 	LogLevel slog.Level
 }
@@ -74,6 +77,9 @@ func Load() (*Config, error) {
 
 		CTURL:             p.str("CT_URL", "https://api.certspotter.com"),
 		CertSpotterAPIKey: p.str("CERTSPOTTER_API_KEY", ""),
+		OnypheAPIKey:      p.str("ONYPHE_API_KEY", ""),
+		OnypheURL:         p.str("ONYPHE_URL", "https://www.onyphe.io/api/v2"),
+		OnypheCTWindow:    p.str("ONYPHE_CT_WINDOW", "-since:48M"),
 
 		LogLevel: p.level("LOG_LEVEL", slog.LevelInfo),
 	}

@@ -66,7 +66,7 @@ func (c stubCT) Lookup(ctx context.Context, zone string) (*enrich.CT, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	return &enrich.CT{Zone: zone, Total: 1, Certificates: []enrich.Certificate{{ID: "42", Names: []string{"*.x.example"}}},
+	return &enrich.CT{Zone: zone, Total: 1, Certificates: []enrich.Certificate{{ID: "42", Names: []string{"*.x.example"}, Sources: []string{"certspotter", "onyphe"}}},
 		Names: []string{"*.x.example", "api.x.example"}}, nil
 }
 
@@ -174,7 +174,10 @@ func TestEnrichDomainJob(t *testing.T) {
 	if got.FQDN != "www.x.example" || !got.FetchedAt.Equal(vtJobTime) || got.Status != "partial" || got.RDAP != nil || got.Errors["rdap"] == "" {
 		t.Errorf("data = %s", body)
 	}
-	for _, key := range []string{`"dns":{"resolver":"9.9.9.9:53","records":[{"qtype":"A","rcode":"NOERROR","ttl":60,"rdata":["192.0.2.1"]}`, `"zone":null`, `"rdap":null`} {
+	for _, key := range []string{
+		`"dns":{"resolver":"9.9.9.9:53","records":[{"qtype":"A","rcode":"NOERROR","ttl":60,"rdata":["192.0.2.1"]}`, `"zone":null`, `"rdap":null`,
+		`"names":["*.x.example"],"sources":["certspotter","onyphe"]}`,
+	} {
 		if !strings.Contains(body, key) {
 			t.Errorf("data lacks %s", key)
 		}
@@ -294,7 +297,7 @@ func TestRenderDomainEnrich(t *testing.T) {
 		Zone: &enrich.Zone{Name: "x.example", SOA: []string{"ns1.p.example h.x.example 1 2 3 4 5"}, NS: []string{"ns1.p.example"}},
 		CT: &enrich.CT{Zone: "x.example", Total: 2, Names: []string{"*.x.example", "old.x.example"},
 			Certificates: []enrich.Certificate{
-				{ID: "42", CertSHA256: certSHA, Issuer: "Let's Encrypt", NotBefore: at, NotAfter: at.AddDate(0, 3, 0), Revoked: true, Names: []string{"*.x.example"}},
+				{ID: "42", CertSHA256: certSHA, Issuer: "Let's Encrypt", NotBefore: at, NotAfter: at.AddDate(0, 3, 0), Revoked: true, Names: []string{"*.x.example"}, Sources: []string{"certspotter", "onyphe"}},
 				{ID: "7", Issuer: "C=US, O=Let's Encrypt, CN=R3", NotBefore: at, NotAfter: at, Names: []string{"old.x.example"}},
 			}},
 		Subdomains: &enrich.Subdomains{Zone: "x.example", Names: []enrich.Subdomain{{Name: "api.x.example", FirstSeen: at, LastSeen: at}}},
@@ -318,7 +321,9 @@ func TestRenderDomainEnrich(t *testing.T) {
 		`<li class="error">rdap: rdap x.example: HTTP 404</li>`,
 		`<a href="/rdata/192.0.2.1"><code>192.0.2.1</code></a>`,
 		`<h3>Zone <a href="/domains/x.example">x.example</a></h3>`, "<td>SOA</td><td><code>ns1.p.example h.x.example 1 2 3 4 5</code></td>",
-		"<h3>Certificate Transparency (Cert Spotter)</h3>",
+		"<h3>Certificate Transparency</h3>", "<th>Names</th><th>Sources</th>",
+		"<code>*.x.example</code><br></td>\n      <td>certspotter, onyphe</td>",
+		"<code>old.x.example</code><br></td>\n      <td>—</td>",
 		"<td><code>" + certSHA + "</code></td>", `<td><span class="error">revoked</span></td>`,
 		"<td>—</td>\n      <td>C=US, O=Let&#39;s Encrypt, CN=R3</td>", "<td>no</td>",
 		"2026-01-01 00:00:00 → 2026-04-01 00:00:00", "<code>*.x.example</code>",

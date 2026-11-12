@@ -3,6 +3,7 @@ package enrich
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -111,6 +112,21 @@ func TestRunCTRateLimited(t *testing.T) {
 	}
 	if res.CT != c.partial {
 		t.Errorf("ct %+v, want the certificates read before the rate limit", res.CT)
+	}
+}
+
+func TestRunMultiCT(t *testing.T) {
+	e, _, _, _ := runEnricher(nil)
+	e.CT = &MultiCT{
+		CertSpotter: &staticCT{ct: ctOf(true, cert("1", shaA, jan, "www.x.example")), err: errors.New("cert spotter rate limited, retry after 120")},
+		Onyphe:      &staticCT{ct: ctOf(false, cert("", shaA, jan, "api.x.example"), cert("", shaB, feb, "mail.x.example"))},
+	}
+	res := e.Run(context.Background(), "x.example", "")
+	if res.Status != StatusPartial || res.Errors[SourceCT] != "cert spotter rate limited, retry after 120" {
+		t.Errorf("status %s errors %v", res.Status, res.Errors)
+	}
+	if res.CT == nil || res.CT.Total != 2 || !res.CT.Truncated || !slices.Equal(res.CT.Certificates[1].Sources, []string{CTSourceCertSpotter, CTSourceOnyphe}) {
+		t.Errorf("ct %+v, want both sources merged despite the rate limit", res.CT)
 	}
 }
 

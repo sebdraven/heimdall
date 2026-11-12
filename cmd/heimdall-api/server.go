@@ -113,8 +113,12 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		pages:     pages,
 		now:       time.Now,
 	}
+	ct := &enrich.MultiCT{CertSpotter: enrich.NewCTClient(cfg.CTURL, cfg.CertSpotterAPIKey)}
+	if cfg.OnypheAPIKey != "" {
+		ct.Onyphe = enrich.NewOnypheClient(cfg.OnypheURL, cfg.OnypheAPIKey, cfg.OnypheCTWindow)
+	}
 	s.enrich = &enrich.Enricher{
-		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: enrich.NewCTClient(cfg.CTURL, cfg.CertSpotterAPIKey), PDNS: chs,
+		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: ct, PDNS: chs,
 	}
 	s.enrichJobs, s.enrichDB, s.links = newJobs[enrichSummary](), pgs, pgs
 	s.corr = correlationStores{chs, pgs}
