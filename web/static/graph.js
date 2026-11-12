@@ -29,9 +29,40 @@
 
   const withVT = (on) => withParam('vt', on ? '1' : '');
 
+  // The VirusTotal box is remembered per graph page, 'on' or 'off'.
+  const vtKey = `heimdall.graph.vt:${window.location.pathname}`;
+  const rememberVT = (on) => {
+    try {
+      window.localStorage.setItem(vtKey, on ? 'on' : 'off');
+    } catch (e) {
+      // Storage unavailable: nothing is remembered.
+    }
+  };
+  const rememberedVT = () => {
+    try {
+      return window.localStorage.getItem(vtKey);
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // vtControls wires the boxes of the bar; it reports true when it reloads
+  // the page to restore VirusTotal.
   const vtControls = () => {
     const toggle = document.getElementById('graph-vt-toggle');
-    if (toggle) toggle.addEventListener('change', () => window.location.assign(withVT(toggle.checked)));
+    if (toggle) {
+      const vt = new URL(window.location.href).searchParams.get('vt');
+      if (vt !== null) {
+        rememberVT(vt === '1');
+      } else if (rememberedVT() === 'on') {
+        window.location.replace(withVT(true));
+        return true;
+      }
+      toggle.addEventListener('change', () => {
+        rememberVT(toggle.checked);
+        window.location.assign(withVT(toggle.checked));
+      });
+    }
 
     // Subdomains are on by default: only subs=0 is kept in the URL.
     const subs = document.getElementById('graph-subs-toggle');
@@ -41,9 +72,10 @@
     if (summary && window.heimdallVTJob) {
       window.heimdallVTJob.watch(summary, document.getElementById('graph-vt-enrich'), withVT(true));
     }
+    return false;
   };
 
-  vtControls();
+  if (vtControls()) return;
 
   const box = document.getElementById('graph');
   if (!box || typeof window.Pivotick !== 'function') return;
@@ -241,6 +273,152 @@
     });
   };
 
+  const edgeData = (edge) => (typeof edge.getData === 'function' ? edge.getData() : edge.data) || {};
+
+  // realEdges returns the edges a synthetic edge stands for, through the
+  // synthetic ones among them.
+  const realEdges = (edge, out = []) => {
+    if (edge.isSynthetic) (edge.representedEdges || []).forEach((e) => realEdges(e, out));
+    else out.push(edge);
+    return out;
+  };
+
+  // edgeKind styles an edge by its kind; a synthetic edge, which Pivotick
+  // draws through a grouped node, by the kind its edges share, else MIXED.
+  const edgeKind = (edge) => {
+    if (!edge.isSynthetic) return edgeData(edge).kind;
+    const kinds = new Set(realEdges(edge).map((e) => edgeData(e).kind).filter(Boolean));
+    return kinds.size === 1 ? [...kinds][0] : 'MIXED';
+  };
+
+  const labelOf = (node) => (node && (dataOf(node).label || node.id)) || '?';
+  const day = (ts) => (typeof ts === 'string' ? ts.slice(0, 10) : '');
+
+  // edgeProperties fills the tooltip and the properties panel of an edge:
+  // Pivotick's default, or for a synthetic edge its real path, one line per
+  // edge.
+  const edgeProperties = (edge) => {
+    if (!edge.isSynthetic) {
+      const props = [{ name: 'id', value: edge.id }];
+      Object.entries(edgeData(edge)).forEach(([name, value]) => {
+        if (name && value) props.push({ name, value });
+      });
+      return props;
+    }
+    const path = document.createElement('div');
+    path.className = 'graph-edge-path';
+    realEdges(edge).forEach((e) => {
+      const d = edgeData(e);
+      let line = `${labelOf(e.from)} → ${labelOf(e.to)} (${d.kind || '?'})`;
+      if (d.first_seen || d.last_seen) line += ` ${day(d.first_seen) || '?'} – ${day(d.last_seen) || '?'}`;
+      const row = document.createElement('div');
+      row.textContent = line;
+      path.append(row);
+    });
+    return [{ name: 'path', value: path }];
+  };
+
+  // The members of a group node, listed in a side panel.
+  const panel = document.getElementById('graph-group');
+  const panelFilter = document.getElementById('graph-group-filter');
+  let panelMembers = [];
+
+  const memberType = (node) => {
+    const t = dataOf(node).type;
+    return t === 'domain-watched' ? 'domain' : t || '?';
+  };
+
+  const openPage = (node) => {
+    const href = hrefOf(node);
+    if (href) window.open(href, '_blank', 'noopener');
+  };
+
+  // showMember opens the groups that hide member, as Pivotick's own search
+  // does, then selects and centres it; without that API, it opens its page.
+  const showMember = (member) => {
+    try {
+      const node = graph.getMutableNode(member.id) || member;
+      let shown = node.canvasRepresentative();
+      while (shown.isGroup) {
+        graph.simplify.open(shown);
+        const next = node.canvasRepresentative();
+        if (next === shown) break;
+        shown = next;
+      }
+      graph.selectElement(node);
+      graph.focusElement(node);
+    } catch (e) {
+      openPage(member);
+    }
+  };
+
+  const memberItem = (m) => {
+    const li = document.createElement('li');
+    if (dataOf(m).type === 'domain-watched') {
+      const dot = document.createElement('span');
+      dot.className = 'graph-group-watched';
+      dot.title = 'watched';
+      li.append(dot);
+    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'graph-group-member';
+    button.title = 'Show in the graph';
+    button.textContent = labelOf(m);
+    button.addEventListener('click', () => showMember(m));
+    const kind = document.createElement('span');
+    kind.className = 'badge';
+    kind.textContent = memberType(m);
+    li.append(button, kind);
+    const href = hrefOf(m);
+    if (href) {
+      const page = document.createElement('a');
+      page.href = href;
+      page.target = '_blank';
+      page.rel = 'noopener';
+      page.textContent = 'page';
+      li.append(page);
+    }
+    return li;
+  };
+
+  const renderMembers = () => {
+    const q = panelFilter.value.trim().toLowerCase();
+    const shown = panelMembers.filter((m) => labelOf(m).toLowerCase().includes(q));
+    document.getElementById('graph-group-list').replaceChildren(...shown.map(memberItem));
+    document.getElementById('graph-group-count').textContent = `${shown.length} / ${panelMembers.length}`;
+  };
+
+  const groupLabel = (node) => {
+    try {
+      return graph.simplify.labelOf(node.info) || 'Group';
+    } catch (e) {
+      return 'Group';
+    }
+  };
+
+  const openGroupPanel = (node) => {
+    if (!panel || !node.info) return;
+    panelMembers = [...(node.info.members || [])].sort(
+      (a, b) => memberType(a).localeCompare(memberType(b)) || labelOf(a).localeCompare(labelOf(b)),
+    );
+    document.getElementById('graph-group-title').textContent = `${groupLabel(node)} (${panelMembers.length} members)`;
+    panelFilter.value = '';
+    renderMembers();
+    panel.hidden = false;
+    panelFilter.focus();
+  };
+
+  if (panel) {
+    panelFilter.addEventListener('input', renderMembers);
+    document.getElementById('graph-group-close').addEventListener('click', () => {
+      panel.hidden = true;
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !panel.hidden) panel.hidden = true;
+    });
+  }
+
   // Node context menu entries: Pivotick appends UI.contextMenu.menuNode.menu
   // to its own and calls visible(node) and onclick(event, node).
   const nodeMenu = [
@@ -294,6 +472,8 @@
         editors: { nodeCreator: { enabled: false }, edgeCreator: { enabled: false }, nodeEditor: { enabled: false } },
         notes: { enabled: false },
         contextMenu: { menuNode: { menu: nodeMenu } },
+        tooltip: { edgePropertiesMap: edgeProperties },
+        propertiesPanel: { edgePropertiesMap: edgeProperties },
         simplify: {
           rules: [
             { kind: 'neighbours', enabled: true },
@@ -320,8 +500,13 @@
           textColor: color('--fg'),
           textTruncate: false,
         },
-        edgeTypeAccessor: (edge) => edge.getData().kind,
+        edgeTypeAccessor: edgeKind,
         edgeStyleMap: {
+          A: { strokeColor: color('--graph-ip') },
+          AAAA: { strokeColor: color('--graph-ip') },
+          CNAME: { strokeColor: color('--graph-domain') },
+          NS_SET: { strokeColor: color('--graph-nsset') },
+          MIXED: { dashed: true, animateDash: false, strokeColor: color('--graph-mixed'), strokeWidth: 1.5 },
           VT: { dashed: true, animateDash: false, strokeColor: color('--graph-vt') },
           MX: { strokeColor: color('--graph-mx') },
           CERT: { dashed: true, animateDash: false, strokeColor: color('--graph-cert') },
@@ -329,7 +514,7 @@
         },
       },
       callbacks: {
-        onNodeClick: (event, node) => expand(node),
+        onNodeClick: (event, node) => (node && node.isGroup ? openGroupPanel(node) : expand(node)),
       },
     });
   };
