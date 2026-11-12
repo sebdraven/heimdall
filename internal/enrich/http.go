@@ -8,12 +8,16 @@ import (
 	"net/http"
 )
 
-const userAgent = "heimdall"
+const (
+	userAgent  = "heimdall"
+	maxErrBody = 4 << 10
+)
 
-// statusError is an answer other than 200.
+// statusError is an answer other than 200; Body is its start.
 type statusError struct {
 	Code       int
 	RetryAfter string
+	Body       string
 }
 
 func (e *statusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
@@ -40,7 +44,8 @@ func fetchJSON(ctx context.Context, hc *http.Client, url, accept string, header 
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return &statusError{Code: res.StatusCode, RetryAfter: res.Header.Get("Retry-After")}
+		body, _ := io.ReadAll(io.LimitReader(res.Body, maxErrBody))
+		return &statusError{Code: res.StatusCode, RetryAfter: res.Header.Get("Retry-After"), Body: string(body)}
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, limit)).Decode(v); err != nil {
 		return fmt.Errorf("decode: %w", err)

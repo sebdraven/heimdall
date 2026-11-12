@@ -21,6 +21,9 @@ const (
 
 	ctTimeout = 30 * time.Second
 	maxCTPage = 16 << 20
+	// ctPageSize is the size of a full page. The API documents none, nor a
+	// next page signal, so a shorter page is the last one.
+	ctPageSize = 100
 )
 
 // Certificate is a Cert Spotter issuance. CertSHA256 is empty for an
@@ -59,7 +62,7 @@ func (c *Certificate) UnmarshalJSON(b []byte) error {
 
 // CT holds the certificates issued for Zone and its subdomains: Total is
 // the number read, Names the union of their names. Truncated is set when
-// the search stopped at MaxCertificates.
+// the search stopped at MaxCertificates or at a rate limit.
 type CT struct {
 	Zone         string        `json:"zone"`
 	Total        int           `json:"total"`
@@ -96,8 +99,10 @@ type issuance struct {
 	Revoked   bool      `json:"revoked"`
 }
 
-// Lookup reads the issuances of zone page after page, at most
-// MaxCertificates in 30 seconds, and returns them latest first.
+// Lookup reads the issuances of zone page after page until a page that is
+// not full, at most MaxCertificates in 30 seconds, and returns them latest
+// first. A 429 after the first page returns the certificates read,
+// Truncated, with the error.
 func (c *CTClient) Lookup(ctx context.Context, zone string) (*CT, error) {
 	ctx, cancel := context.WithTimeout(ctx, ctTimeout)
 	defer cancel()
@@ -115,10 +120,12 @@ func (c *CTClient) Lookup(ctx context.Context, zone string) (*CT, error) {
 		}
 		var page []issuance
 		if err := fetchJSON(ctx, c.HTTP, c.issuancesURL(zone, after), "application/json", header, maxCTPage, &page); err != nil {
+			var se *statusError
+			if len(out.Certificates) > 0 && errors.As(err, &se) && se.Code == http.StatusTooManyRequests {
+				out.Truncated = true
+				return out.finish(), ctError(err)
+			}
 			return nil, ctError(err)
-		}
-		if len(page) == 0 {
-			break
 		}
 		for _, is := range page {
 			if !seen[is.ID] {
@@ -126,12 +133,20 @@ func (c *CTClient) Lookup(ctx context.Context, zone string) (*CT, error) {
 				out.Certificates = append(out.Certificates, is.certificate())
 			}
 		}
+		if len(page) < ctPageSize {
+			break
+		}
 		next := page[len(page)-1].ID
 		if next == "" || next == after {
 			break
 		}
 		after = next
 	}
+	return out.finish(), nil
+}
+
+// finish caps, orders and totals the certificates read.
+func (out *CT) finish() *CT {
 	if len(out.Certificates) > MaxCertificates {
 		out.Certificates = out.Certificates[:MaxCertificates]
 	}
@@ -149,7 +164,7 @@ func (c *CTClient) Lookup(ctx context.Context, zone string) (*CT, error) {
 		out.Names = []string{}
 	}
 	out.Total = len(out.Certificates)
-	return out, nil
+	return out
 }
 
 func (c *CTClient) issuancesURL(zone, after string) string {
@@ -174,10 +189,14 @@ func (is issuance) certificate() Certificate {
 func ctError(err error) error {
 	var se *statusError
 	if errors.As(err, &se) && se.Code == http.StatusTooManyRequests {
-		if se.RetryAfter != "" {
-			return fmt.Errorf("cert spotter rate limited, retry after %s", se.RetryAfter)
+		msg := "cert spotter rate limited"
+		if body := strings.ToLower(se.Body); strings.Contains(body, "full-domain") || strings.Contains(body, "full domain") {
+			msg = "cert spotter full-domain query quota exhausted"
 		}
-		return errors.New("cert spotter rate limited")
+		if se.RetryAfter != "" {
+			msg += ", retry after " + se.RetryAfter
+		}
+		return errors.New(msg)
 	}
 	return fmt.Errorf("cert spotter: %w", err)
 }

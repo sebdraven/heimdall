@@ -37,7 +37,7 @@ const MaxSubdomains = 500
 var ErrNoResolver = errors.New("no active resolver")
 
 // Result is an enrichment. A source that failed is nil, its message in
-// Errors.
+// Errors, except CT, which keeps the certificates read before a rate limit.
 type Result struct {
 	FQDN       string
 	FetchedAt  time.Time
@@ -133,7 +133,6 @@ func (e *Enricher) Run(ctx context.Context, fqdn, server string) Result {
 		c, err := e.CT.Lookup(ctx, scope)
 		if err != nil {
 			fail(SourceCT, err)
-			return
 		}
 		res.CT = c
 	})
