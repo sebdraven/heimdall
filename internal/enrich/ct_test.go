@@ -35,6 +35,16 @@ func issuanceJSON(id, sha, notBefore string, names ...string) map[string]any {
 	}
 }
 
+// issuances returns n issuances of hN.x.example from id first on.
+func issuances(first, n int) []map[string]any {
+	page := make([]map[string]any, 0, n)
+	for id := first; id < first+n; id++ {
+		nb := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(id) * time.Hour).Format(time.RFC3339)
+		page = append(page, issuanceJSON(strconv.Itoa(id), shaA, nb, "h"+strconv.Itoa(id)+".x.example"))
+	}
+	return page
+}
+
 func TestCTLookupPages(t *testing.T) {
 	var mu sync.Mutex
 	var afters []string
@@ -59,10 +69,13 @@ func TestCTLookupPages(t *testing.T) {
 			other := issuanceJSON("101", shaB, "2026-03-01T00:00:00Z", "API.x.example.")
 			other["issuer"] = map[string]any{"name": "CN=Other CA"}
 			other["revoked"] = true
-			page = []map[string]any{
+			for i := range ctPageSize - 2 {
+				page = append(page, issuanceJSON("f"+strconv.Itoa(i), shaA, "2025-01-01T00:00:00Z", "www.x.example"))
+			}
+			page = append(page,
 				issuanceJSON("100", shaA, "2026-01-01T00:00:00Z", "WWW.X.example.", "*.x.example", "www.x.example"),
 				other,
-			}
+			)
 		case "101":
 			page = []map[string]any{issuanceJSON("102", shaC, "2026-03-01T00:00:00+01:00", "mail.x.example")}
 		}
@@ -72,14 +85,14 @@ func TestCTLookupPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(afters, []string{"", "101", "102"}) {
-		t.Errorf("pages after %q, want the first page, then after 101 and 102", afters)
+	if !slices.Equal(afters, []string{"", "101"}) {
+		t.Errorf("pages after %q, want the full first page, then after 101 and no more", afters)
 	}
-	if ct.Zone != "x.example" || ct.Total != 3 || ct.Truncated || len(ct.Certificates) != 3 {
-		t.Fatalf("ct = %+v, want 3 certificates", ct)
+	if ct.Zone != "x.example" || ct.Total != ctPageSize+1 || ct.Truncated || len(ct.Certificates) != ctPageSize+1 {
+		t.Fatalf("ct = %+v, want %d certificates", ct, ctPageSize+1)
 	}
 	var ids []string
-	for _, cert := range ct.Certificates {
+	for _, cert := range ct.Certificates[:3] {
 		ids = append(ids, cert.ID)
 	}
 	if got := strings.Join(ids, " "); got != "101 102 100" {
@@ -156,22 +169,114 @@ func TestCTAPIKey(t *testing.T) {
 	}
 }
 
+func TestCTShortPageEnds(t *testing.T) {
+	for _, tt := range []struct {
+		sizes []int
+		total int
+	}{
+		{[]int{0}, 0},
+		{[]int{1}, 1},
+		{[]int{ctPageSize - 1}, ctPageSize - 1},
+		{[]int{ctPageSize, 0}, ctPageSize},
+		{[]int{ctPageSize, 40}, ctPageSize + 40},
+		{[]int{ctPageSize, ctPageSize, 1}, 2*ctPageSize + 1},
+	} {
+		var mu sync.Mutex
+		requests := 0
+		c := ctServer(t, "", func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			k := requests
+			requests++
+			mu.Unlock()
+			if k >= len(tt.sizes) {
+				t.Errorf("pages %v: request %d after the last page", tt.sizes, k+1)
+				_, _ = w.Write([]byte("[]"))
+				return
+			}
+			first := 1
+			for _, n := range tt.sizes[:k] {
+				first += n
+			}
+			if after := r.URL.Query().Get("after"); k > 0 && after != strconv.Itoa(first-1) {
+				t.Errorf("pages %v: request %d after %q, want %d", tt.sizes, k+1, after, first-1)
+			}
+			_ = json.NewEncoder(w).Encode(issuances(first, tt.sizes[k]))
+		})
+		ct, err := c.Lookup(context.Background(), "x.example")
+		if err != nil {
+			t.Errorf("pages %v: %v", tt.sizes, err)
+			continue
+		}
+		if requests != len(tt.sizes) || ct.Total != tt.total || ct.Truncated {
+			t.Errorf("pages %v: %d requests, total %d, truncated %v; want %d, %d", tt.sizes, requests, ct.Total, ct.Truncated, len(tt.sizes), tt.total)
+		}
+	}
+}
+
 func TestCTRateLimited(t *testing.T) {
+	const quotaBody = `{"code":"rate_limited","message":"You have exceeded the full-domain query quota of your subscription"}`
+	for _, tt := range []struct {
+		desc       string
+		retryAfter string
+		body       string
+		want       string
+	}{
+		{"no Retry-After", "", "", "cert spotter rate limited"},
+		{"Retry-After", "120", `{"code":"rate_limited","message":"Client request rate has exceeded what your subscription allows"}`, "cert spotter rate limited, retry after 120"},
+		{"full-domain quota", "3600", quotaBody, "cert spotter full-domain query quota exhausted, retry after 3600"},
+		{"full domain quota without Retry-After", "", "Full domain queries: hourly limit reached", "cert spotter full-domain query quota exhausted"},
+	} {
+		c := ctServer(t, "", func(w http.ResponseWriter, _ *http.Request) {
+			if tt.retryAfter != "" {
+				w.Header().Set("Retry-After", tt.retryAfter)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(tt.body))
+		})
+		if ct, err := c.Lookup(context.Background(), "x.example"); err == nil || err.Error() != tt.want || ct != nil {
+			t.Errorf("%s, on the first page: %+v, %v; want %q and no certificate", tt.desc, ct, err, tt.want)
+		}
+	}
+}
+
+func TestCTRateLimitedKeepsPages(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
 	c := ctServer(t, "", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
 		if r.URL.Query().Get("after") == "" {
-			_ = json.NewEncoder(w).Encode([]map[string]any{issuanceJSON("1", shaA, "2026-01-01T00:00:00Z", "x.example")})
+			_ = json.NewEncoder(w).Encode(issuances(1, ctPageSize))
 			return
 		}
-		w.Header().Set("Retry-After", "120")
+		w.Header().Set("Retry-After", "3600")
 		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"code":"rate_limited","message":"full-domain query quota exceeded"}`))
 	})
-	if ct, err := c.Lookup(context.Background(), "x.example"); err == nil || err.Error() != "cert spotter rate limited, retry after 120" || ct != nil {
-		t.Errorf("429 on the second page: %+v, %v; want no certificate kept", ct, err)
+	ct, err := c.Lookup(context.Background(), "x.example")
+	if err == nil || err.Error() != "cert spotter full-domain query quota exhausted, retry after 3600" {
+		t.Errorf("err = %v", err)
+	}
+	if ct == nil {
+		t.Fatal("429 on the second page: no certificate, want the first page")
+	}
+	if requests != 2 || !ct.Truncated || ct.Total != ctPageSize || len(ct.Certificates) != ctPageSize || len(ct.Names) != ctPageSize {
+		t.Errorf("%d requests, truncated %v, total %d, kept %d, names %d", requests, ct.Truncated, ct.Total, len(ct.Certificates), len(ct.Names))
+	}
+	if ct.Certificates[0].ID != strconv.Itoa(ctPageSize) || ct.Certificates[ctPageSize-1].ID != "1" {
+		t.Errorf("kept %s to %s, want latest first", ct.Certificates[0].ID, ct.Certificates[ctPageSize-1].ID)
 	}
 
-	c = ctServer(t, "", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTooManyRequests) })
-	if _, err := c.Lookup(context.Background(), "x.example"); err == nil || err.Error() != "cert spotter rate limited" {
-		t.Errorf("429 without Retry-After: %v", err)
+	c = ctServer(t, "", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("after") == "" {
+			_ = json.NewEncoder(w).Encode(issuances(1, ctPageSize))
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	if ct, err := c.Lookup(context.Background(), "x.example"); err == nil || err.Error() != "cert spotter: HTTP 502" || ct != nil {
+		t.Errorf("502 on the second page: %+v, %v; want the error and no certificate", ct, err)
 	}
 }
 

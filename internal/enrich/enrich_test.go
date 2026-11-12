@@ -23,14 +23,15 @@ func (f *fakeRegistry) Lookup(_ context.Context, name string) (*RDAP, error) {
 }
 
 type fakeCT struct {
-	err   error
-	asked string
+	err     error
+	partial *CT
+	asked   string
 }
 
 func (f *fakeCT) Lookup(_ context.Context, zone string) (*CT, error) {
 	f.asked = zone
 	if f.err != nil {
-		return nil, f.err
+		return f.partial, f.err
 	}
 	return &CT{Zone: zone, Names: []string{"www." + zone}}, nil
 }
@@ -97,6 +98,19 @@ func TestRunPartial(t *testing.T) {
 	}
 	if c.asked != "x.example" || p.asked != "x.example" || res.CT == nil || !res.Subdomains.Truncated {
 		t.Errorf("without DNS: ct %s pdns %s, want the registrable domain; subdomains %+v", c.asked, p.asked, res.Subdomains)
+	}
+}
+
+func TestRunCTRateLimited(t *testing.T) {
+	e, _, c, _ := runEnricher(nil)
+	c.err = errors.New("cert spotter rate limited, retry after 120")
+	c.partial = &CT{Zone: "x.example", Total: 1, Certificates: []Certificate{{ID: "1", CertSHA256: shaA}}, Names: []string{"x.example"}, Truncated: true}
+	res := e.Run(context.Background(), "x.example", "")
+	if res.Status != StatusPartial || res.Errors[SourceCT] != "cert spotter rate limited, retry after 120" {
+		t.Errorf("status %s errors %v", res.Status, res.Errors)
+	}
+	if res.CT != c.partial {
+		t.Errorf("ct %+v, want the certificates read before the rate limit", res.CT)
 	}
 }
 
