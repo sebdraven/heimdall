@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/sebdraven/heimdall/internal/cdn"
+	"github.com/sebdraven/heimdall/internal/enrich"
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
@@ -24,6 +27,8 @@ const (
 	graphMaxNodes = 500
 	graphMaxDepth = 2
 	graphMaxVT    = 2000
+	// graphSubdomainsPerDomain caps the subdomains a stored enrichment adds.
+	graphSubdomainsPerDomain = 50
 )
 
 const (
@@ -63,6 +68,11 @@ type watchStore interface {
 type graphStores struct {
 	pdnsStore
 	watchStore
+}
+
+// subdomainStore reads the stored enrichments of names.
+type subdomainStore interface {
+	DomainEnrichments(ctx context.Context, fqdns []string) (map[string]enrich.Result, error)
 }
 
 type graphNode struct {
@@ -335,6 +345,122 @@ func markWatched(g *graphJSON, watched map[string]pg.Domain) {
 	}
 }
 
+// linkSubdomains adds a SUB edge to each domain node from its closest
+// ancestor among the domain nodes of g, up to its registrable domain.
+func linkSubdomains(g *graphJSON) {
+	domains := map[string]bool{}
+	for _, fqdn := range graphFQDNs(*g) {
+		domains[fqdn] = true
+	}
+	edges := map[edgeKey]bool{}
+	for _, e := range g.Edges {
+		edges[edgeKey{e.From, e.To, e.Kind}] = true
+	}
+	for _, fqdn := range graphFQDNs(*g) {
+		reg, err := publicsuffix.EffectiveTLDPlusOne(fqdn)
+		if err != nil || fqdn == reg || !inZone(fqdn, reg) {
+			continue
+		}
+		for p := fqdn; p != reg; {
+			_, p, _ = strings.Cut(p, ".")
+			if !domains[p] {
+				continue
+			}
+			k := edgeKey{"d:" + p, "d:" + fqdn, edgeSub}
+			if !edges[k] {
+				edges[k] = true
+				g.Edges = append(g.Edges, graphEdge{From: k.from, To: k.to, Kind: edgeSub})
+			}
+			break
+		}
+	}
+}
+
+// addSubdomains adds to g the subdomains of the enrichments of its domains,
+// at most graphSubdomainsPerDomain each, without edges.
+func addSubdomains(g graphJSON, enriched map[string]enrich.Result, limit int) graphJSON {
+	b := newGraphBuilder(limit, g.Truncated)
+	b.g.ExcludedCDN = g.ExcludedCDN
+	for _, n := range g.Nodes {
+		b.node(n)
+	}
+	for _, e := range g.Edges {
+		b.edges[edgeKey{e.From, e.To, e.Kind}] = true
+		b.g.Edges = append(b.g.Edges, e)
+	}
+	for _, fqdn := range graphFQDNs(g) {
+		r, ok := enriched[fqdn]
+		if !ok {
+			continue
+		}
+		names := enrichedSubdomains(r, fqdn)
+		if len(names) > graphSubdomainsPerDomain {
+			names, b.g.Truncated = names[:graphSubdomainsPerDomain], true
+		}
+		for _, name := range names {
+			b.node(domainNode(name))
+		}
+	}
+	return b.g
+}
+
+// enrichedSubdomains returns the names of r strictly below fqdn, within
+// their registrable domain: passive DNS, last seen first, then the names of
+// the certificates, a wildcard as its base name.
+func enrichedSubdomains(r enrich.Result, fqdn string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(n string) {
+		name, err := resolver.NormalizeFQDN(strings.TrimPrefix(n, "*."))
+		if err != nil || seen[name] || name == fqdn || !inZone(name, fqdn) {
+			return
+		}
+		if reg, err := publicsuffix.EffectiveTLDPlusOne(name); err != nil || !inZone(fqdn, reg) {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if r.Subdomains != nil {
+		subs := slices.Clone(r.Subdomains.Names)
+		slices.SortStableFunc(subs, func(a, b enrich.Subdomain) int { return b.LastSeen.Compare(a.LastSeen) })
+		for _, d := range subs {
+			add(d.Name)
+		}
+	}
+	if r.CT != nil {
+		for _, n := range r.CT.Names {
+			add(n)
+		}
+	}
+	return out
+}
+
+// inZone reports whether name is zone or below it.
+func inZone(name, zone string) bool {
+	return name == zone || strings.HasSuffix(name, "."+zone)
+}
+
+// withSubdomains adds to g the subdomains of the stored enrichments of its
+// domains, then links each domain to its closest parent.
+func (s *server) withSubdomains(ctx context.Context, g graphJSON) (graphJSON, error) {
+	if fqdns := graphFQDNs(g); len(fqdns) > 0 {
+		enriched, err := s.subdomains.DomainEnrichments(ctx, fqdns)
+		if err != nil {
+			return graphJSON{}, fmt.Errorf("enrichments: %w", err)
+		}
+		g = addSubdomains(g, enriched, graphMaxNodes)
+	}
+	linkSubdomains(&g)
+	return g, nil
+}
+
+// wantSubs reports whether the request keeps the SUB edges, subs=0 leaving
+// them out.
+func wantSubs(r *http.Request) bool {
+	return r.URL.Query().Get("subs") != "0"
+}
+
 func (s *server) loadGraphDomain(ctx context.Context, fqdn string) (graphDomain, error) {
 	d := graphDomain{FQDN: fqdn}
 	var err error
@@ -425,13 +551,19 @@ func vtCandidates(in graphInput, cl *cdn.Classifier) (hosts, ips []string) {
 	return slices.Compact(slices.Sorted(slices.Values(hosts))), slices.Compact(slices.Sorted(slices.Values(ips)))
 }
 
-func (s *server) loadGraph(ctx context.Context, fqdns []string, peers bool, minShared int, withVT bool) (graphJSON, error) {
+func (s *server) loadGraph(ctx context.Context, fqdns []string, peers bool, minShared int, withVT, subs bool) (graphJSON, error) {
 	in, err := s.loadGraphInput(ctx, fqdns, peers, withVT)
 	if err != nil {
 		return graphJSON{}, err
 	}
 	in.MinShared = minShared
-	return s.watchGraph(ctx, buildGraph(in, s.cdn, graphMaxNodes))
+	g := buildGraph(in, s.cdn, graphMaxNodes)
+	if subs {
+		if g, err = s.withSubdomains(ctx, g); err != nil {
+			return graphJSON{}, err
+		}
+	}
+	return s.watchGraph(ctx, g)
 }
 
 // watchGraph marks the watched domains of g.
@@ -450,16 +582,17 @@ func (s *server) wantVT(r *http.Request) bool {
 	return s.vt != nil && r.URL.Query().Get("vt") == "1"
 }
 
-// loadDomainGraph reads the graph of /graph/domain/{fqdn}?depth=.
-func (s *server) loadDomainGraph(r *http.Request, withVT bool) (graphJSON, string, error) {
+// loadDomainGraph reads the graph of /graph/domain/{fqdn}?depth=, with
+// subs the SUB edges.
+func (s *server) loadDomainGraph(r *http.Request, withVT, subs bool) (graphJSON, string, error) {
 	fqdn := resolver.Name(r.PathValue("fqdn"))
 	depth := intParam(r, "depth", 1, graphMaxDepth)
-	g, err := s.loadGraph(r.Context(), []string{fqdn}, depth == graphMaxDepth, 1, withVT)
+	g, err := s.loadGraph(r.Context(), []string{fqdn}, depth == graphMaxDepth, 1, withVT, subs)
 	return g, fqdn, err
 }
 
 // loadCampaignGraph reads the graph of /graph/campaign/{id}.
-func (s *server) loadCampaignGraph(ctx context.Context, id int64, withVT bool) (graphJSON, string, error) {
+func (s *server) loadCampaignGraph(ctx context.Context, id int64, withVT, subs bool) (graphJSON, string, error) {
 	c, err := s.graph.Campaign(ctx, id)
 	if err != nil {
 		return graphJSON{}, "", err
@@ -472,15 +605,16 @@ func (s *server) loadCampaignGraph(ctx context.Context, id int64, withVT bool) (
 	for _, d := range domains {
 		fqdns = append(fqdns, d.FQDN)
 	}
-	g, err := s.loadGraph(ctx, fqdns, true, 2, withVT)
+	g, err := s.loadGraph(ctx, fqdns, true, 2, withVT, subs)
 	return g, c.Name, err
 }
 
 // apiGraphDomain serves /api/graph/domain/{fqdn}: depth 1 is the domain,
 // its addresses, CNAME targets and NS set, depth 2 adds the names sharing
-// them.
+// them. Unless subs=0, the subdomains of the stored enrichments are added
+// and each domain is linked to its closest parent (SUB).
 func (s *server) apiGraphDomain(w http.ResponseWriter, r *http.Request) {
-	g, _, err := s.loadDomainGraph(r, s.wantVT(r))
+	g, _, err := s.loadDomainGraph(r, s.wantVT(r), wantSubs(r))
 	if err != nil {
 		s.apiStoreError(w, r, err)
 		return
@@ -490,14 +624,14 @@ func (s *server) apiGraphDomain(w http.ResponseWriter, r *http.Request) {
 
 // apiGraphCampaign serves /api/graph/campaign/{id}: the campaign's domains
 // at depth 1, and the names sharing an address or an NS set with at least
-// two of them.
+// two of them; the SUB edges as for a domain.
 func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		apiError(w, http.StatusNotFound, "not found")
 		return
 	}
-	g, _, err := s.loadCampaignGraph(r.Context(), id, s.wantVT(r))
+	g, _, err := s.loadCampaignGraph(r.Context(), id, s.wantVT(r), wantSubs(r))
 	if err != nil {
 		s.apiStoreError(w, r, err)
 		return
@@ -509,7 +643,8 @@ func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 // offers both depths. VT is nil when VirusTotal is not configured. CDN, the
 // provider, is set for the graph of a CDN address, which is not drawn.
 // Campaigns, for an analyst only, and CurrentCampaign, 0 if none, fill the
-// "Link to campaign" dialog.
+// "Link to campaign" dialog. SubsToggle, for a domain or campaign graph,
+// offers the SUB edges, shown when Subs is set.
 type graphView struct {
 	Title           string
 	Back            string
@@ -521,6 +656,8 @@ type graphView struct {
 	CDN             string
 	Campaigns       []campaignRef
 	CurrentCampaign int64
+	SubsToggle      bool
+	Subs            bool
 }
 
 // graphVTView drives the VirusTotal controls. Remaining is -1 when unknown.
@@ -560,6 +697,10 @@ func (s *server) graphDomainPage(w http.ResponseWriter, r *http.Request) {
 	v := graphView{
 		Title: fqdn, Back: "/domains/" + url.PathEscape(fqdn),
 		Source: path + "/data?depth=" + strconv.Itoa(depth), Path: path, Depth: depth, MaxNodes: graphMaxNodes,
+		SubsToggle: true, Subs: wantSubs(r),
+	}
+	if !v.Subs {
+		v.Source += "&subs=0"
 	}
 	s.setVT(r, &v, path+"/vt?depth="+strconv.Itoa(depth))
 	if err := s.setLink(r, &v, 0, fqdn); err != nil {
@@ -583,6 +724,10 @@ func (s *server) graphCampaignPage(w http.ResponseWriter, r *http.Request) {
 	v := graphView{
 		Title: c.Name, Back: fmt.Sprintf("/campaigns/%d", id),
 		Source: fmt.Sprintf("/graph/campaign/%d/data", id), MaxNodes: graphMaxNodes,
+		SubsToggle: true, Subs: wantSubs(r),
+	}
+	if !v.Subs {
+		v.Source += "?subs=0"
 	}
 	s.setVT(r, &v, fmt.Sprintf("/graph/campaign/%d/vt", id))
 	if err := s.setLink(r, &v, id, ""); err != nil {
@@ -600,7 +745,7 @@ func (s *server) enrichGraphDomain(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not found")
 		return
 	}
-	g, fqdn, err := s.loadDomainGraph(r, false)
+	g, fqdn, err := s.loadDomainGraph(r, false, false)
 	if err != nil {
 		s.apiStoreError(w, r, err)
 		return
@@ -616,7 +761,7 @@ func (s *server) enrichGraphCampaign(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not found")
 		return
 	}
-	g, name, err := s.loadCampaignGraph(r.Context(), id, false)
+	g, name, err := s.loadCampaignGraph(r.Context(), id, false, false)
 	if err != nil {
 		s.apiStoreError(w, r, err)
 		return

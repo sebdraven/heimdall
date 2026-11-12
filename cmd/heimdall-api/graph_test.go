@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebdraven/heimdall/internal/enrich"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 	"github.com/sebdraven/heimdall/internal/store/pg"
 	"github.com/sebdraven/heimdall/internal/vt"
@@ -260,6 +262,20 @@ type fakeGraphStore struct {
 	watched map[string]pg.Domain
 	lookups int
 	pdns    []ch.PDNSRecord
+	// enriched are the stored enrichments, asked the names read by each call.
+	enriched map[string]enrich.Result
+	asked    [][]string
+}
+
+func (f *fakeGraphStore) DomainEnrichments(_ context.Context, fqdns []string) (map[string]enrich.Result, error) {
+	f.asked = append(f.asked, fqdns)
+	out := map[string]enrich.Result{}
+	for _, fqdn := range fqdns {
+		if r, ok := f.enriched[fqdn]; ok {
+			out[fqdn] = r
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeGraphStore) VTPairs(_ context.Context, hosts, ips []string, _ int) ([]ch.VTPair, error) {
@@ -355,6 +371,7 @@ func graphTestServer(t *testing.T) (*server, *fakeGraphStore) {
 	s := testServer(t)
 	s.cdn = testCDN()
 	s.graph = graphStores{f, f}
+	s.subdomains = f
 	return s, f
 }
 
@@ -472,9 +489,31 @@ func TestRenderGraphPage(t *testing.T) {
 		t.Error("graph page offers VirusTotal without it configured")
 	}
 
-	body = renderPage(t, "graph", graphView{Title: "spynote", Back: "/campaigns/7", Source: "/graph/campaign/7/data", MaxNodes: graphMaxNodes})
+	if !strings.Contains(body, "SUB: subdomain</li>") || strings.Contains(body, "graph-subs-toggle") {
+		t.Error("graph page legend lacks SUB, or offers subdomains without SubsToggle")
+	}
+
+	body = renderPage(t, "graph", graphView{Title: "spynote", Back: "/campaigns/7", Source: "/graph/campaign/7/data", MaxNodes: graphMaxNodes, SubsToggle: true, Subs: true})
 	if strings.Contains(body, "Depth") {
 		t.Error("campaign graph offers depths")
+	}
+	if !strings.Contains(body, `<input type="checkbox" id="graph-subs-toggle" checked> Subdomains`) {
+		t.Error("campaign graph lacks the checked Subdomains box")
+	}
+
+	body = renderPage(t, "graph", graphView{
+		Title: "www.x.example", Back: "/domains/www.x.example",
+		Source: "/graph/domain/www.x.example/data?depth=1&subs=0", Path: "/graph/domain/www.x.example", Depth: 1, MaxNodes: graphMaxNodes,
+		SubsToggle: true,
+	})
+	for _, want := range []string{
+		`data-source="/graph/domain/www.x.example/data?depth=1&amp;subs=0"`,
+		`<a href="/graph/domain/www.x.example?depth=2&amp;subs=0">2</a>`,
+		`<input type="checkbox" id="graph-subs-toggle"> Subdomains`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graph page without subdomains lacks %q", want)
+		}
 	}
 
 	v := graphView{
@@ -501,5 +540,133 @@ func TestRenderGraphPage(t *testing.T) {
 	body = renderPage(t, "domain", map[string]any{"FQDN": "www.x.example", "Domain": (*pg.Domain)(nil), "Sharing": map[string]uint64{}})
 	if !strings.Contains(body, `<a class="title-link" href="/graph/domain/www.x.example">Graph</a>`) {
 		t.Error("domain page lacks the Graph link")
+	}
+}
+
+// domainGraph is a graph of domain nodes and the given edges.
+func domainGraph(fqdns []string, edges ...graphEdge) graphJSON {
+	g := graphJSON{Nodes: []graphNode{}, Edges: append([]graphEdge{}, edges...)}
+	for _, fqdn := range fqdns {
+		g.Nodes = append(g.Nodes, domainNode(fqdn))
+	}
+	return g
+}
+
+func TestLinkSubdomains(t *testing.T) {
+	g := domainGraph([]string{"x.example", "b.x.example", "c.b.x.example", "a.d.x.example", "www.x.example", "b.y.example", "co.uk", "x.co.uk"},
+		graphEdge{From: "d:x.example", To: "d:www.x.example", Kind: edgeSub})
+	g.Nodes = append(g.Nodes, ipNode("192.0.2.1"))
+	g.Edges = append(g.Edges, graphEdge{From: "d:x.example", To: "ip:192.0.2.1", Kind: "A"})
+
+	linkSubdomains(&g)
+	_, edges := graphSummary(g)
+	want := "d:x.example>d:www.x.example/SUB d:x.example>ip:192.0.2.1/A " +
+		"d:x.example>d:b.x.example/SUB d:b.x.example>d:c.b.x.example/SUB d:x.example>d:a.d.x.example/SUB"
+	if edges != want {
+		t.Errorf("edges = %s\nwant    %s", edges, want)
+	}
+	linkSubdomains(&g)
+	if _, again := graphSummary(g); again != want {
+		t.Errorf("linked twice: %s", again)
+	}
+	if len(g.Nodes) != 9 {
+		t.Errorf("%d nodes, want the 9 of the graph", len(g.Nodes))
+	}
+}
+
+func TestEnrichedSubdomains(t *testing.T) {
+	jan, mar := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	r := enrich.Result{
+		Subdomains: &enrich.Subdomains{Zone: "x.example", Names: []enrich.Subdomain{
+			{Name: "old.x.example", LastSeen: jan},
+			{Name: "new.x.example", LastSeen: mar},
+			{Name: "x.example", LastSeen: mar},
+			{Name: "other.example", LastSeen: mar},
+		}},
+		CT: &enrich.CT{Zone: "x.example", Names: []string{"*.x.example", "*.api.x.example", "NEW.x.example.", "deep.api.x.example", "www.other.example", "notx.example"}},
+	}
+	if got, want := strings.Join(enrichedSubdomains(r, "x.example"), " "),
+		"new.x.example old.x.example api.x.example deep.api.x.example"; got != want {
+		t.Errorf("subdomains = %s\nwant         %s", got, want)
+	}
+	if got := enrichedSubdomains(enrich.Result{}, "x.example"); got != nil {
+		t.Errorf("no source: %v", got)
+	}
+
+	g := addSubdomains(domainGraph([]string{"x.example", "b.y.example"}), map[string]enrich.Result{"x.example": r}, graphMaxNodes)
+	linkSubdomains(&g)
+	nodes, edges := graphSummary(g)
+	if want := "d:x.example d:b.y.example d:new.x.example d:old.x.example d:api.x.example d:deep.api.x.example"; nodes != want {
+		t.Errorf("nodes = %s\nwant    %s", nodes, want)
+	}
+	if want := "d:x.example>d:new.x.example/SUB d:x.example>d:old.x.example/SUB d:x.example>d:api.x.example/SUB d:api.x.example>d:deep.api.x.example/SUB"; edges != want {
+		t.Errorf("edges = %s\nwant    %s", edges, want)
+	}
+	if g.Truncated {
+		t.Error("truncated under the caps")
+	}
+}
+
+func TestAddSubdomainsCaps(t *testing.T) {
+	var names []string
+	for i := range graphSubdomainsPerDomain + 10 {
+		names = append(names, fmt.Sprintf("h%d.x.example", i))
+	}
+	enriched := map[string]enrich.Result{"x.example": {CT: &enrich.CT{Names: names}}}
+
+	g := addSubdomains(domainGraph([]string{"x.example"}), enriched, graphMaxNodes)
+	if len(g.Nodes) != 1+graphSubdomainsPerDomain || !g.Truncated || g.Nodes[graphSubdomainsPerDomain].Label != names[graphSubdomainsPerDomain-1] {
+		t.Errorf("%d nodes, truncated %v, want the first %d subdomains", len(g.Nodes), g.Truncated, graphSubdomainsPerDomain)
+	}
+
+	enriched["x.example"] = enrich.Result{CT: &enrich.CT{Names: names[:3]}}
+	g = addSubdomains(domainGraph([]string{"x.example"}, graphEdge{From: "d:x.example", To: "d:x.example", Kind: edgeCNAME}), enriched, 3)
+	if nodes, edges := graphSummary(g); nodes != "d:x.example d:h0.x.example d:h1.x.example" || edges != "d:x.example>d:x.example/CNAME" || !g.Truncated {
+		t.Errorf("node limit: nodes %q edges %q truncated %v", nodes, edges, g.Truncated)
+	}
+}
+
+func TestAPIGraphSubdomains(t *testing.T) {
+	s, f := graphTestServer(t)
+	_, plain := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example?subs=0", "fqdn", "www.x.example")
+	if len(f.asked) != 0 {
+		t.Errorf("subs=0 read the enrichments of %v", f.asked)
+	}
+	_, none := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example", "fqdn", "www.x.example")
+	if none != plain {
+		t.Errorf("without enrichment or parent:\n%s\nwant the graph unchanged\n%s", none, plain)
+	}
+	if len(f.asked) != 1 || strings.Join(f.asked[0], " ") != "www.x.example cdn.y.example" {
+		t.Errorf("enrichments read %v, want one read of the domains of the graph", f.asked)
+	}
+
+	f.enriched = map[string]enrich.Result{"www.x.example": {
+		Subdomains: &enrich.Subdomains{Zone: "x.example", Names: []enrich.Subdomain{{Name: "mail.www.x.example"}, {Name: "api.x.example"}}},
+		CT:         &enrich.CT{Zone: "x.example", Names: []string{"*.www.x.example", "*.a.mail.www.x.example"}},
+	}}
+	f.watched["mail.www.x.example"] = pg.Domain{FQDN: "mail.www.x.example", Campaign: "spynote"}
+	_, body := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example", "fqdn", "www.x.example")
+	for _, want := range []string{
+		`{"id":"d:mail.www.x.example","kind":"domain","label":"mail.www.x.example","watched":true,"campaign":"spynote","href":"/domains/mail.www.x.example","source":"heimdall"}`,
+		`{"from":"d:www.x.example","to":"d:mail.www.x.example","kind":"SUB"}`,
+		`{"from":"d:mail.www.x.example","to":"d:a.mail.www.x.example","kind":"SUB"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graph lacks %s", want)
+		}
+	}
+	if strings.Contains(body, "d:api.x.example") || strings.Contains(body, `"d:www.x.example","kind":"SUB"`) {
+		t.Errorf("a name outside the domain or the wildcard of the domain itself was added: %s", body)
+	}
+	if _, body := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example?subs=0", "fqdn", "www.x.example"); body != plain {
+		t.Errorf("subs=0 with an enrichment:\n%s\nwant\n%s", body, plain)
+	}
+
+	_, body = serveGraph(t, s, s.apiGraphCampaign, "/api/graph/campaign/7", "id", "7")
+	if !strings.Contains(body, `{"from":"d:www.x.example","to":"d:mail.www.x.example","kind":"SUB"}`) {
+		t.Errorf("campaign graph lacks the SUB edges: %s", body)
+	}
+	if _, body := serveGraph(t, s, s.apiGraphCampaign, "/api/graph/campaign/7?subs=0", "id", "7"); strings.Contains(body, `"SUB"`) {
+		t.Errorf("campaign graph with subs=0 has SUB edges: %s", body)
 	}
 }

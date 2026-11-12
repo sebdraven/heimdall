@@ -447,8 +447,8 @@ GET    /api/campaigns/{id}/domains  same fields as GET /api/domains, 404 if unkn
 GET    /api/campaigns/{id}/analytics[?days=30|90]   analytics of a campaign, see Campaign analytics
 GET    /api/events?since=&until=&kind=&campaign=&domain=&limit=
 GET    /api/pivots/{fqdn}[?limit=]  names sharing an A/AAAA value or the whole NS set, with overlap, see below
-GET    /api/graph/domain/{fqdn}[?depth=]   graph around a name, see Graph view
-GET    /api/graph/campaign/{id}     graph of a campaign, 404 if unknown, see Graph view
+GET    /api/graph/domain/{fqdn}[?depth=&subs=0]   graph around a name, see Graph view
+GET    /api/graph/campaign/{id}[?subs=0]   graph of a campaign, 404 if unknown, see Graph view
 GET    /api/graph/ip/{ip}           graph of an address, 400 if not one, see Graph view
 GET    /api/graph/ns/{set}          domains with exactly this NS set (comma-separated), see Graph view
 GET    /api/search?q=&limit=        watchlist, pdns names and pdns values, see below
@@ -581,6 +581,25 @@ takes Bearer tokens.
 plus the names outside the campaign that share a value or an NS set with at
 least two of its domains.
 
+Both then add subdomains, unless `?subs=0`:
+
+- each domain of the graph with a stored enrichment (read in one Postgres
+  query) adds the names strictly below it from that enrichment: its passive
+  DNS subdomains, last seen first, then the names of its certificates, a
+  wildcard as its base name; at most 50 per domain (`"truncated": true` when
+  more are left out), within the 500 nodes of the graph. A name whose
+  registrable domain lies above the enriched domain is left out;
+- each domain node, new ones included, gets one `SUB` edge from its closest
+  ancestor among the domain nodes, climbing label by label up to its
+  registrable domain (public suffix list), never above it: `a.b.x.example`
+  hangs from `b.x.example` when present, else from `x.example`.
+
+The pages have a "Subdomains" box, checked by default, which reloads the
+graph with `subs=0` when unchecked; a domain node expanded on click then
+reads its graph with `subs=0` too, and the `SUB` edges of an expansion are
+kept like the others. The VirusTotal enrichment of a graph ("Enrich with
+VT") looks up the graph without them.
+
 `/graph/ip/{ip}` (data at `/graph/ip/{ip}/data`, `/api/graph/ip/{ip}` under
 a bearer token), linked as "Graph" from `/rdata/{ip}` and from the context
 menu of IP nodes, centres on an address: its node first, then the names
@@ -612,8 +631,9 @@ A node is `{"id", "kind", "label", "watched", "campaign", "href",
 
 The nameservers of an `nsset` are sorted. `watched` and `campaign` come from
 the watchlist. An edge is `{"from", "to", "kind"}`, `kind` being `A`, `AAAA`,
-`CNAME`, `NS_SET` or, with `first_seen` and `last_seen`, `VT`; the graph of
-an enrichment adds `MX`, `CERT` (dashed) and `SUB`. Nodes and edges are unique. CDN addresses are left out
+`CNAME`, `NS_SET`, `SUB` (parent to subdomain) or, with `first_seen` and
+`last_seen`, `VT`; the graph of an enrichment adds `MX` and `CERT` (dashed).
+Nodes and edges are unique. CDN addresses are left out
 and counted in `excluded_cdn`. A graph stops at 500 nodes, the domains of the
 request first, with `"truncated": true`; it is also set when a pivot query
 reaches its limit of 500 rows.
