@@ -106,14 +106,26 @@
   });
 
   // An edge is unique by (from, kind, to).
+  const edgeKey = (from, kind, to) => `${from}|${kind}|${to}`;
+
   const toEdge = (e) => ({
-    id: `${e.from}|${e.kind}|${e.to}`,
+    id: edgeKey(e.from, e.kind, e.to),
     from: e.from,
     to: e.to,
     data: { kind: e.kind, first_seen: e.first_seen, last_seen: e.last_seen },
   });
 
+  // newEdges converts edges, leaving out those whose key is in seen or
+  // repeats one before; it adds the keys it keeps to seen.
+  const newEdges = (edges, seen = new Set()) =>
+    edges.map(toEdge).filter((e) => {
+      if (seen.has(e.id)) return false;
+      seen.add(e.id);
+      return true;
+    });
+
   const dataOf = (node) => (node && typeof node.getData === 'function' && node.getData()) || {};
+  const edgeData = (edge) => (typeof edge.getData === 'function' ? edge.getData() : edge.data) || {};
   const ipOf = (node) => dataOf(node).ip || '';
   const fqdnOf = (node) => dataOf(node).fqdn || '';
   const hrefOf = (node) => {
@@ -190,13 +202,23 @@
   };
 
   // merge adds the nodes of g the graph lacks around node, at most
-  // maxExpand, and the edges of g between nodes of the graph.
+  // maxExpand, and the edges of g between nodes of the graph, but not one
+  // whose (from, kind, to) the graph has under another id.
   const merge = (node, g) => {
     const fresh = g.nodes.filter((n) => !graph.getMutableNode(n.id));
     const added = fresh.slice(0, maxExpand);
     const ids = new Set(added.map((n) => n.id));
     const present = (id) => ids.has(id) || !!graph.getMutableNode(id);
-    const edges = g.edges.map(toEdge).filter((e) => present(e.from) && present(e.to) && !graph.getMutableEdge(e.id));
+    const seen = new Set(
+      graph
+        .getMutableEdges()
+        .filter((e) => !e.isSynthetic)
+        .map((e) => edgeKey(e.from.id, edgeData(e).kind, e.to.id)),
+    );
+    const edges = newEdges(
+      g.edges.filter((e) => present(e.from) && present(e.to)),
+      seen,
+    );
     // An empty update still redraws.
     graph.updateData(added.map((n, i) => around(toNode(n), node, i, added.length)), edges);
     if (fresh.length > maxExpand) expandStatus(`+${fresh.length - maxExpand} not shown`);
@@ -273,8 +295,6 @@
     });
   };
 
-  const edgeData = (edge) => (typeof edge.getData === 'function' ? edge.getData() : edge.data) || {};
-
   // realEdges returns the edges a synthetic edge stands for, through the
   // synthetic ones among them.
   const realEdges = (edge, out = []) => {
@@ -283,11 +303,25 @@
     return out;
   };
 
-  // edgeKind styles an edge by its kind; a synthetic edge, which Pivotick
-  // draws through a grouped node, by the kind its edges share, else MIXED.
+  // The kind drawn for parallel edges of several kinds, strongest first.
+  const kindPriority = ['SUB', 'CNAME', 'A', 'AAAA', 'MX', 'NS_SET', 'CERT', 'VT'];
+
+  // shownId is the id of the node drawn for node: itself, or the group that
+  // hides it.
+  const shownId = (node) => (typeof node.canvasRepresentative === 'function' ? node.canvasRepresentative() : node).id;
+
+  // edgeKind styles an edge by its kind. Pivotick draws one synthetic edge
+  // for all the edges between two drawn nodes: when they all join those two
+  // nodes, it takes the strongest of their kinds; when some go through a
+  // grouped node, the kind they share, else MIXED.
   const edgeKind = (edge) => {
     if (!edge.isSynthetic) return edgeData(edge).kind;
-    const kinds = new Set(realEdges(edge).map((e) => edgeData(e).kind).filter(Boolean));
+    const edges = realEdges(edge);
+    const kinds = new Set(edges.map((e) => edgeData(e).kind).filter(Boolean));
+    const ends = new Set([shownId(edge.from), shownId(edge.to)]);
+    const parallel = edges.every((e) => e.from.id !== e.to.id && ends.has(e.from.id) && ends.has(e.to.id));
+    const strongest = parallel && kindPriority.find((k) => kinds.has(k));
+    if (strongest) return strongest;
     return kinds.size === 1 ? [...kinds][0] : 'MIXED';
   };
 
@@ -466,7 +500,7 @@
     }
     if (g.truncated) show('graph-truncated');
 
-    graph = new window.Pivotick(box, { nodes: g.nodes.map(toNode), edges: g.edges.map(toEdge) }, {
+    graph = new window.Pivotick(box, { nodes: g.nodes.map(toNode), edges: newEdges(g.edges) }, {
       UI: {
         mode: 'light',
         editors: { nodeCreator: { enabled: false }, edgeCreator: { enabled: false }, nodeEditor: { enabled: false } },

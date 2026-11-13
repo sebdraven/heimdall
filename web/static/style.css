@@ -153,6 +153,8 @@ main:has(> .graph-canvas) { max-width: none; padding-bottom: 1rem; }
 .swatch-nsset-line { border-top: 2px solid var(--graph-nsset); }
 .swatch-mixed { border-top: 2px dashed var(--graph-mixed); }
 .graph-canvas { position: relative; height: calc(100vh - 8.5rem); min-height: 24rem; border: 1px solid var(--line); border-radius: 4px; }
+/* pivotick.css dots every synthetic edge; only a dashed style should. */
+.pvt-edge-group.pvt-edge-synthetic path:not(.dashed) { stroke-dasharray: none; }
 .graph-edge-path { display: grid; gap: .15rem; font-family: ui-monospace, monospace; font-size: 12px; white-space: nowrap; }
 
 /* Members of a group node: a side panel over the graph, which stays usable. */
