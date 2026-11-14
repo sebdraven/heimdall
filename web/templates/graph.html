@@ -22,18 +22,21 @@
     <li><span class="swatch swatch-domain"></span>domain unwatched</li>
     <li><span class="swatch swatch-ip"></span>ip</li>
     <li><span class="swatch swatch-nsset"></span>nsset</li>
+    <li><span class="swatch swatch-tracker"></span>tracker</li>
     <li><span class="swatch-line swatch-addr"></span>A/AAAA</li>
     <li><span class="swatch-line swatch-cname"></span>CNAME</li>
     <li><span class="swatch-line swatch-nsset-line"></span>NS_SET</li>
     <li><span class="swatch-line swatch-mx"></span>MX</li>
     <li><span class="swatch-line swatch-cert"></span>CERT: name of a certificate</li>
     <li><span class="swatch-line swatch-sub"></span>SUB: subdomain</li>
+    <li><span class="swatch-line swatch-redirect"></span>REDIRECT: final host of a Lookyloo capture</li>
+    <li><span class="swatch-line swatch-tracker-line"></span>TRACKER: identifier loaded by a Lookyloo capture</li>
     {{if .Data.VT}}
     <li><span class="swatch swatch-vt-node"></span>seen by VirusTotal only</li>
     <li><span class="swatch-line swatch-vt"></span>VirusTotal resolution</li>
     {{end}}
     <li><span class="swatch-line swatch-mixed"></span>dashed grey: path through a grouped node, mixed types (see its tooltip); a path of a single type keeps its colour</li>
-    <li>two nodes joined by edges of several types: the colour of the strongest (SUB &gt; CNAME &gt; A/AAAA &gt; MX &gt; NS_SET &gt; CERT &gt; VT); the tooltip lists them all</li>
+    <li>two nodes joined by edges of several types: the colour of the strongest (SUB &gt; TRACKER &gt; CNAME &gt; REDIRECT &gt; A/AAAA &gt; MX &gt; NS_SET &gt; CERT &gt; VT); the tooltip lists them all</li>
   </ul>
   <p class="meta">click: expand the neighbours · click a group: list of its members · right click: actions</p>
   <p class="notice" id="graph-expand" aria-live="polite" hidden></p>

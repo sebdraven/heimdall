@@ -16,6 +16,8 @@
   --graph-mx: #3d8b5f;
   --graph-cert: #c2185b;
   --graph-sub: #26a69a;
+  --graph-redirect: #6d4c41;
+  --graph-tracker: #ff7043;
   --graph-mixed: #b0b4b8;
 }
 
@@ -142,12 +144,15 @@ main:has(> .graph-canvas) { max-width: none; padding-bottom: 1rem; }
 .swatch-domain { background: var(--graph-domain); }
 .swatch-ip { background: var(--graph-ip); }
 .swatch-nsset { background: var(--graph-nsset); }
+.swatch-tracker { background: var(--graph-tracker); }
 .swatch-vt-node { background: var(--graph-vt-node); }
 .swatch-line { display: inline-block; width: 1.2rem; margin-right: .35rem; vertical-align: middle; }
 .swatch-vt { border-top: 2px dashed var(--graph-vt); }
 .swatch-mx { border-top: 2px solid var(--graph-mx); }
 .swatch-cert { border-top: 2px dashed var(--graph-cert); }
 .swatch-sub { border-top: 2px solid var(--graph-sub); }
+.swatch-redirect { border-top: 2px solid var(--graph-redirect); }
+.swatch-tracker-line { border-top: 2px solid var(--graph-tracker); }
 .swatch-addr { border-top: 2px solid var(--graph-ip); }
 .swatch-cname { border-top: 2px solid var(--graph-domain); }
 .swatch-nsset-line { border-top: 2px solid var(--graph-nsset); }

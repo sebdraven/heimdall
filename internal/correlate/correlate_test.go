@@ -325,6 +325,64 @@ func TestMatches(t *testing.T) {
 	}
 }
 
+func TestTracker(t *testing.T) {
+	seen := func(domain, kind, id string, from, to int) Tracker {
+		return Tracker{Domain: domain, Kind: kind, ID: id, FirstSeen: day(from), LastSeen: day(to)}
+	}
+	r := compute(Input{Trackers: []Tracker{
+		seen("a1.example", "gads", "AW-11021906314", 0, 10),
+		seen("b1.example", "gads", "AW-11021906314", 5, 20),
+		seen("a1.example", "ua", "UA-132944514-1", 0, 10),
+		seen("c1.example", "ua", "UA-132944514-1", 30, 40),
+		seen("a2.example", "clarity", "k4x9q2p7zm", 0, 1),
+		seen("b2.example", "clarity", "k4x9q2p7zm", 0, 1),
+		seen("a2.example", "payment", "paddle:123456", 0, 1),
+		seen("c1.example", "payment", "paddle:123456", 0, 1),
+		// A provider without merchant id says nothing.
+		seen("a1.example", "payment", "stripe", 0, 1),
+		seen("b1.example", "payment", "stripe", 0, 1),
+		// Same campaign, or none.
+		seen("a1.example", "fbpixel", "1234567890123456", 0, 1),
+		seen("a2.example", "fbpixel", "1234567890123456", 0, 1),
+		seen("free.example", "fbpixel", "1234567890123456", 0, 1),
+		{Domain: "b2.example", Kind: "gtm", ID: ""},
+	}})
+	check(t, "tracker", r,
+		"tracker clarity:k4x9q2p7zm a2.example/1 b2.example/2 0.6 2026-03-01..2026-03-02",
+		"tracker gads:AW-11021906314 a1.example/1 b1.example/2 1 2026-03-06..2026-03-11",
+		"tracker payment:paddle:123456 a2.example/1 c1.example/3 1 2026-03-01..2026-03-02",
+		"tracker ua:UA-132944514-1 a1.example/1 c1.example/3 0.9")
+	if r.Skipped[SkipProvider] != 1 {
+		t.Errorf("skipped %v, want the payment provider without merchant id", r.Skipped)
+	}
+
+	var shared []Tracker
+	for i := range MaxHolders - 1 {
+		shared = append(shared, seen(fmt.Sprintf("d%d.example", i), "gtm", "GTM-5XQ7K2M", 0, 1))
+	}
+	shared = append(shared, seen("a1.example", "gtm", "GTM-5XQ7K2M", 0, 1), seen("b1.example", "gtm", "GTM-5XQ7K2M", 0, 1))
+	if r := compute(Input{Trackers: shared}); len(r.Evidence) != 0 || r.Skipped[SkipShared] != 1 {
+		t.Errorf("held by %d domains: %s, skipped %v", len(shared), links(r), r.Skipped)
+	}
+}
+
+func TestTrackerWeight(t *testing.T) {
+	for _, tt := range []struct {
+		kind, id string
+		want     float64
+	}{
+		{"gads", "AW-11021906314", 1}, {"fbpixel", "1234567890123456", 1}, {"bing_uet", "187051234", 1},
+		{"payment", "paddle:123456", 1}, {"payment", "stripe:pk_live_51HxYzAbCdEf012345", 1}, {"payment", "stripe", 0},
+		{"gtm", "GTM-5XQ7K2M", 0.9}, {"ga4", "G-8ZK3QW1ABC", 0.9}, {"ua", "UA-132944514-1", 0.9},
+		{"clarity", "k4x9q2p7zm", 0.6}, {"crazyegg", "00117426", 0.6}, {"hotjar", "3456789", 0.6}, {"yandex", "98765432", 0.6},
+		{"unknown", "x", 0},
+	} {
+		if got := TrackerWeight(tt.kind, tt.id); got != tt.want {
+			t.Errorf("TrackerWeight(%s, %s) = %v, want %v", tt.kind, tt.id, got, tt.want)
+		}
+	}
+}
+
 func TestWeight(t *testing.T) {
 	for _, k := range Kinds {
 		if Weight(k) <= 0 || Weight(k) > 1 {

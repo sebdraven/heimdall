@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
+	"github.com/sebdraven/heimdall/internal/enrich"
 	"github.com/sebdraven/heimdall/internal/store/ch"
 )
 
@@ -50,18 +51,19 @@ var SOADefaults = []string{
 }
 
 const (
-	KindCert  = "cert"
-	KindNSSet = "ns_set"
-	KindIP    = "ip"
-	KindCNAME = "cname"
-	KindMX    = "mx"
-	KindSOA   = "soa"
-	KindRDAP  = "rdap"
-	KindVT    = "vt"
+	KindCert    = "cert"
+	KindTracker = "tracker"
+	KindNSSet   = "ns_set"
+	KindIP      = "ip"
+	KindCNAME   = "cname"
+	KindMX      = "mx"
+	KindSOA     = "soa"
+	KindRDAP    = "rdap"
+	KindVT      = "vt"
 )
 
 // Kinds lists the kinds of evidence, strongest first.
-var Kinds = []string{KindCert, KindNSSet, KindIP, KindCNAME, KindMX, KindSOA, KindRDAP, KindVT}
+var Kinds = []string{KindCert, KindTracker, KindNSSet, KindIP, KindCNAME, KindMX, KindSOA, KindRDAP, KindVT}
 
 const (
 	WeightCert  = 1.0
@@ -74,6 +76,33 @@ const (
 	WeightRDAP  = 0.3
 	WeightVT    = 0.3
 )
+
+// A tracker weighs by its kind, see TrackerWeight.
+const (
+	// WeightTrackerAccount: an advertising or payment account.
+	WeightTrackerAccount = 1.0
+	// WeightTrackerGoogle: a Google Analytics or Tag Manager property.
+	WeightTrackerGoogle = 0.9
+	// WeightTrackerAnalytics: another analytics site id.
+	WeightTrackerAnalytics = 0.6
+)
+
+var trackerWeights = map[string]float64{
+	enrich.TrackerGAds: WeightTrackerAccount, enrich.TrackerFBPixel: WeightTrackerAccount,
+	enrich.TrackerBingUET: WeightTrackerAccount, enrich.TrackerPayment: WeightTrackerAccount,
+	enrich.TrackerGTM: WeightTrackerGoogle, enrich.TrackerGA4: WeightTrackerGoogle, enrich.TrackerUA: WeightTrackerGoogle,
+	enrich.TrackerClarity: WeightTrackerAnalytics, enrich.TrackerCrazyEgg: WeightTrackerAnalytics,
+	enrich.TrackerHotjar: WeightTrackerAnalytics, enrich.TrackerYandex: WeightTrackerAnalytics,
+}
+
+// TrackerWeight returns the weight of a tracker, 0 for an unknown kind and a
+// payment provider without merchant id.
+func TrackerWeight(kind, id string) float64 {
+	if kind == enrich.TrackerPayment && !strings.Contains(id, ":") {
+		return 0
+	}
+	return trackerWeights[kind]
+}
 
 const (
 	// MaxIPHolders: an address of more watched domains over a period is
@@ -89,10 +118,11 @@ const (
 	maxChain = 8
 )
 
-// Weight returns the weight of kind, WeightIP for an address.
+// Weight returns the weight of kind, WeightIP for an address and the highest
+// for a tracker.
 func Weight(kind string) float64 {
 	return map[string]float64{
-		KindCert: WeightCert, KindNSSet: WeightNSSet, KindIP: WeightIP, KindCNAME: WeightCNAME,
+		KindCert: WeightCert, KindTracker: WeightTrackerAccount, KindNSSet: WeightNSSet, KindIP: WeightIP, KindCNAME: WeightCNAME,
 		KindMX: WeightMX, KindSOA: WeightSOA, KindRDAP: WeightRDAP, KindVT: WeightVT,
 	}[kind]
 }
@@ -143,6 +173,16 @@ type Cert struct {
 	NotAfter  time.Time
 }
 
+// Tracker is a tracker of the Lookyloo captures of the stored enrichment of
+// a domain, captured from FirstSeen to LastSeen.
+type Tracker struct {
+	Domain    string
+	Kind      string
+	ID        string
+	FirstSeen time.Time
+	LastSeen  time.Time
+}
+
 // Registration is the RDAP registration of the registrable domain of a
 // domain.
 type Registration struct {
@@ -175,6 +215,7 @@ type Input struct {
 	NSSets        []NSSet
 	SOAs          []SOA
 	Certs         []Cert
+	Trackers      []Tracker
 	Registrations []Registration
 	VT            []Record
 	Chains        map[string]Chain
@@ -232,6 +273,7 @@ func Compute(in Input) Result {
 		c.campaign[d.FQDN] = d.Campaign
 	}
 	c.certs()
+	c.trackers()
 	c.nssets()
 	ipHolders := c.ips()
 	c.cnames()
@@ -360,6 +402,35 @@ func (c *computer) certs() {
 		hs[sha] = append(hs[sha], holder{domain: cert.Domain, period: p})
 	}
 	c.pairValues(KindCert, group(hs), WeightCert, false)
+}
+
+// trackers links the domains whose captures share a tracker, "<kind>:<id>",
+// at the weight of its kind.
+func (c *computer) trackers() {
+	hs := map[string][]holder{}
+	weights := map[string]float64{}
+	for _, t := range c.in.Trackers {
+		kind, id := strings.TrimSpace(t.Kind), strings.TrimSpace(t.ID)
+		if kind == "" || id == "" {
+			continue
+		}
+		v := kind + ":" + id
+		w := TrackerWeight(kind, id)
+		if w == 0 {
+			c.skip(SkipProvider, KindTracker, v)
+			continue
+		}
+		var p *ch.Period
+		if !t.FirstSeen.IsZero() && !t.LastSeen.IsZero() {
+			p = period(ch.Period{First: t.FirstSeen, Last: t.LastSeen})
+		}
+		hs[v] = append(hs[v], holder{domain: t.Domain, period: p})
+		weights[v] = w
+	}
+	hs = group(hs)
+	for _, v := range slices.Sorted(maps.Keys(hs)) {
+		c.pairAll(KindTracker, v, hs[v], weights[v], false)
+	}
 }
 
 func (c *computer) nssets() {

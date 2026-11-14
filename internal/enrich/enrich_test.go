@@ -55,11 +55,25 @@ func (f *fakePDNS) SubdomainsOf(_ context.Context, zone string, limit int) ([]Su
 	return out, nil
 }
 
+type fakeArchive struct {
+	err     error
+	partial *Lookyloo
+	asked   string
+}
+
+func (f *fakeArchive) Captures(_ context.Context, fqdn string) (*Lookyloo, error) {
+	f.asked = fqdn
+	if f.err != nil {
+		return f.partial, f.err
+	}
+	return &Lookyloo{Instance: "http://lookyloo.example", CapturesFound: 1, CapturesRead: 1, Captures: []Capture{{UUID: uuidA}}}, nil
+}
+
 var runTime = time.Date(2026, 11, 9, 12, 0, 0, 0, time.FixedZone("CET", 3600))
 
 func runEnricher(dns Resolver) (*Enricher, *fakeRegistry, *fakeCT, *fakePDNS) {
 	r, c, p := &fakeRegistry{}, &fakeCT{}, &fakePDNS{n: 2}
-	return &Enricher{DNS: dns, RDAP: r, CT: c, PDNS: p, Now: func() time.Time { return runTime }}, r, c, p
+	return &Enricher{DNS: dns, RDAP: r, CT: c, PDNS: p, Lookyloo: &fakeArchive{}, Now: func() time.Time { return runTime }}, r, c, p
 }
 
 func TestRunOK(t *testing.T) {
@@ -75,11 +89,11 @@ func TestRunOK(t *testing.T) {
 	if res.FQDN != "www.a.x.example" || !res.FetchedAt.Equal(runTime) || res.FetchedAt.Location() != time.UTC {
 		t.Errorf("fqdn %s fetched at %s", res.FQDN, res.FetchedAt)
 	}
-	if res.DNS == nil || res.Zone == nil || res.Zone.Name != "a.x.example" || res.RDAP == nil || res.CT == nil || res.Subdomains == nil {
+	if res.DNS == nil || res.Zone == nil || res.Zone.Name != "a.x.example" || res.RDAP == nil || res.CT == nil || res.Subdomains == nil || res.Lookyloo == nil {
 		t.Fatalf("result %+v", res)
 	}
-	if r.asked != "www.a.x.example" || c.asked != "a.x.example" || p.asked != "a.x.example" {
-		t.Errorf("asked rdap %s ct %s pdns %s, want CT and passive DNS below the zone", r.asked, c.asked, p.asked)
+	if ly := e.Lookyloo.(*fakeArchive).asked; r.asked != "www.a.x.example" || c.asked != "a.x.example" || p.asked != "a.x.example" || ly != "www.a.x.example" {
+		t.Errorf("asked rdap %s ct %s pdns %s lookyloo %s, want CT and passive DNS below the zone, Lookyloo the name", r.asked, c.asked, p.asked, ly)
 	}
 	if res.Subdomains.Zone != "a.x.example" || len(res.Subdomains.Names) != 2 || res.Subdomains.Truncated {
 		t.Errorf("subdomains %+v", res.Subdomains)
@@ -142,8 +156,9 @@ func TestRunNoResolver(t *testing.T) {
 func TestRunError(t *testing.T) {
 	e, r, c, p := runEnricher(nil)
 	r.err, c.err, p.err = errors.New("r"), errors.New("c"), errors.New("p")
+	e.Lookyloo.(*fakeArchive).err = errors.New("lookyloo hostname_info: HTTP 502")
 	res := e.Run(context.Background(), "x.example", "")
-	if res.Status != StatusError || len(res.Errors) != 4 || res.Errors[SourceSubdomains] != "passive DNS: p" {
+	if res.Status != StatusError || len(res.Errors) != 5 || res.Errors[SourceSubdomains] != "passive DNS: p" || res.Lookyloo != nil {
 		t.Errorf("status %s errors %v", res.Status, res.Errors)
 	}
 
@@ -151,6 +166,33 @@ func TestRunError(t *testing.T) {
 	res = e.Run(context.Background(), "co.uk", "")
 	if res.Errors[SourceCT] != "no registrable domain for co.uk" || c.asked != "" || p.asked != "" {
 		t.Errorf("public suffix: errors %v, asked ct %q pdns %q", res.Errors, c.asked, p.asked)
+	}
+}
+
+func TestRunLookyloo(t *testing.T) {
+	e, _, _, _ := runEnricher(&fakeResolver{obs: map[string]resolver.Observation{
+		"www.a.x.example A":   answer("www.a.x.example", "A", "192.0.2.1"),
+		"www.a.x.example SOA": {Rcode: "NOERROR", Authority: []resolver.Answer{{Name: "a.x.example", Type: "SOA", Value: testSOA}}},
+	}})
+	e.Lookyloo = nil
+	res := e.Run(context.Background(), "www.a.x.example", "9.9.9.9:53")
+	if res.Status != StatusOK || res.Lookyloo != nil || len(res.Errors) != 1 || res.Errors[SourceLookyloo] != "lookyloo not configured" {
+		t.Errorf("not configured: status %s lookyloo %+v errors %v, want ok and the source named", res.Status, res.Lookyloo, res.Errors)
+	}
+
+	e, r, c, p := runEnricher(nil)
+	e.Lookyloo = nil
+	r.err, c.err, p.err = errors.New("r"), errors.New("c"), errors.New("p")
+	if res := e.Run(context.Background(), "x.example", ""); res.Status != StatusError || len(res.Errors) != 5 {
+		t.Errorf("not configured, the others failed: status %s errors %v", res.Status, res.Errors)
+	}
+
+	e, _, _, _ = runEnricher(nil)
+	partial := &Lookyloo{CapturesFound: 2, CapturesRead: 1, Truncated: true}
+	e.Lookyloo = &fakeArchive{err: errors.New("lookyloo urls: HTTP 404"), partial: partial}
+	res = e.Run(context.Background(), "x.example", "")
+	if res.Status != StatusPartial || res.Errors[SourceLookyloo] != "lookyloo urls: HTTP 404" || res.Lookyloo != partial {
+		t.Errorf("partial: status %s lookyloo %+v errors %v, want the captures read kept", res.Status, res.Lookyloo, res.Errors)
 	}
 }
 
