@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -32,15 +33,18 @@ const (
 )
 
 const (
-	nodeDomain = "domain"
-	nodeIP     = "ip"
-	nodeNSSet  = "nsset"
-	edgeCNAME  = "CNAME"
-	edgeMX     = "MX"
-	edgeNSSet  = "NS_SET"
-	edgeVT     = "VT"
-	edgeCert   = "CERT"
-	edgeSub    = "SUB"
+	nodeDomain   = "domain"
+	nodeIP       = "ip"
+	nodeNSSet    = "nsset"
+	nodeTracker  = "tracker"
+	edgeCNAME    = "CNAME"
+	edgeMX       = "MX"
+	edgeNSSet    = "NS_SET"
+	edgeVT       = "VT"
+	edgeCert     = "CERT"
+	edgeSub      = "SUB"
+	edgeRedirect = "REDIRECT"
+	edgeTracker  = "TRACKER"
 
 	sourceHeimdall = "heimdall"
 	sourceVT       = "vt"
@@ -133,6 +137,20 @@ func domainNode(fqdn string) graphNode {
 
 func ipNode(value string) graphNode {
 	return graphNode{ID: "ip:" + value, Kind: nodeIP, Label: value, Href: "/rdata/" + url.PathEscape(value), Source: sourceHeimdall}
+}
+
+// trackerNode is the node of a tracker, shown in full.
+func trackerNode(kind, id string) graphNode {
+	return graphNode{ID: "t:" + kind + ":" + id, Kind: nodeTracker, Label: kind + " " + id, Source: sourceHeimdall}
+}
+
+// hostNode is the node of the host of a URL, an address or a name.
+func hostNode(host string) (graphNode, bool) {
+	if a, err := netip.ParseAddr(host); err == nil {
+		return ipNode(a.String()), true
+	}
+	name, err := resolver.NormalizeFQDN(host)
+	return domainNode(name), err == nil
 }
 
 func vtNode(n graphNode) graphNode {
@@ -376,9 +394,8 @@ func linkSubdomains(g *graphJSON) {
 	}
 }
 
-// addSubdomains adds to g the subdomains of the enrichments of its domains,
-// at most graphSubdomainsPerDomain each, without edges.
-func addSubdomains(g graphJSON, enriched map[string]enrich.Result, limit int) graphJSON {
+// extendGraph returns a builder holding g.
+func extendGraph(g graphJSON, limit int) *graphBuilder {
 	b := newGraphBuilder(limit, g.Truncated)
 	b.g.ExcludedCDN = g.ExcludedCDN
 	for _, n := range g.Nodes {
@@ -388,6 +405,29 @@ func addSubdomains(g graphJSON, enriched map[string]enrich.Result, limit int) gr
 		b.edges[edgeKey{e.From, e.To, e.Kind}] = true
 		b.g.Edges = append(b.g.Edges, e)
 	}
+	return b
+}
+
+// addTrackers links the domains of g to the trackers of their enrichments
+// (TRACKER): domains sharing one meet on its node.
+func addTrackers(g graphJSON, enriched map[string]enrich.Result, limit int) graphJSON {
+	b := extendGraph(g, limit)
+	for _, fqdn := range graphFQDNs(g) {
+		r, ok := enriched[fqdn]
+		if !ok || r.Lookyloo == nil {
+			continue
+		}
+		for _, t := range r.Lookyloo.Trackers {
+			b.edge(domainNode(fqdn), trackerNode(t.Kind, t.ID), edgeTracker)
+		}
+	}
+	return b.g
+}
+
+// addSubdomains adds to g the subdomains of the enrichments of its domains,
+// at most graphSubdomainsPerDomain each, without edges.
+func addSubdomains(g graphJSON, enriched map[string]enrich.Result, limit int) graphJSON {
+	b := extendGraph(g, limit)
 	for _, fqdn := range graphFQDNs(g) {
 		r, ok := enriched[fqdn]
 		if !ok {
@@ -441,17 +481,23 @@ func inZone(name, zone string) bool {
 	return name == zone || strings.HasSuffix(name, "."+zone)
 }
 
-// withSubdomains adds to g the subdomains of the stored enrichments of its
-// domains, then links each domain to its closest parent.
-func (s *server) withSubdomains(ctx context.Context, g graphJSON) (graphJSON, error) {
+// withEnrichments adds to g the trackers of the stored enrichments of its
+// domains and, with subs, their subdomains, then links each domain to its
+// closest parent.
+func (s *server) withEnrichments(ctx context.Context, g graphJSON, subs bool) (graphJSON, error) {
 	if fqdns := graphFQDNs(g); len(fqdns) > 0 {
 		enriched, err := s.subdomains.DomainEnrichments(ctx, fqdns)
 		if err != nil {
 			return graphJSON{}, fmt.Errorf("enrichments: %w", err)
 		}
-		g = addSubdomains(g, enriched, graphMaxNodes)
+		g = addTrackers(g, enriched, graphMaxNodes)
+		if subs {
+			g = addSubdomains(g, enriched, graphMaxNodes)
+		}
 	}
-	linkSubdomains(&g)
+	if subs {
+		linkSubdomains(&g)
+	}
 	return g, nil
 }
 
@@ -557,11 +603,9 @@ func (s *server) loadGraph(ctx context.Context, fqdns []string, peers bool, minS
 		return graphJSON{}, err
 	}
 	in.MinShared = minShared
-	g := buildGraph(in, s.cdn, graphMaxNodes)
-	if subs {
-		if g, err = s.withSubdomains(ctx, g); err != nil {
-			return graphJSON{}, err
-		}
+	g, err := s.withEnrichments(ctx, buildGraph(in, s.cdn, graphMaxNodes), subs)
+	if err != nil {
+		return graphJSON{}, err
 	}
 	return s.watchGraph(ctx, g)
 }
@@ -611,8 +655,9 @@ func (s *server) loadCampaignGraph(ctx context.Context, id int64, withVT, subs b
 
 // apiGraphDomain serves /api/graph/domain/{fqdn}: depth 1 is the domain,
 // its addresses, CNAME targets and NS set, depth 2 adds the names sharing
-// them. Unless subs=0, the subdomains of the stored enrichments are added
-// and each domain is linked to its closest parent (SUB).
+// them. The trackers of the stored enrichments are added (TRACKER) and,
+// unless subs=0, their subdomains, each domain linked to its closest parent
+// (SUB).
 func (s *server) apiGraphDomain(w http.ResponseWriter, r *http.Request) {
 	g, _, err := s.loadDomainGraph(r, s.wantVT(r), wantSubs(r))
 	if err != nil {
@@ -624,7 +669,7 @@ func (s *server) apiGraphDomain(w http.ResponseWriter, r *http.Request) {
 
 // apiGraphCampaign serves /api/graph/campaign/{id}: the campaign's domains
 // at depth 1, and the names sharing an address or an NS set with at least
-// two of them; the SUB edges as for a domain.
+// two of them; the TRACKER and SUB edges as for a domain.
 func (s *server) apiGraphCampaign(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {

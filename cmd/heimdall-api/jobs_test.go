@@ -18,7 +18,7 @@ func TestJobJSON(t *testing.T) {
 			job[enrichSummary]{Target: "domain:x.example", State: jobFailed, StartedAt: &at, FinishedAt: &at,
 				Result: &enrichSummary{Status: "error", Summary: "error: <dns> failed"}, Error: "internal error"},
 			`{"job":"domain:x.example","state":"failed","started_at":"2026-11-04T12:00:00Z","finished_at":"2026-11-04T12:00:00Z",` +
-				`"status":"error","counts":{"dns":0,"rdap":0,"ct":0,"subdomains":0},"summary":"error: <dns> failed","error":"internal error"}`,
+				`"status":"error","counts":{"dns":0,"rdap":0,"ct":0,"subdomains":0,"lookyloo":0},"summary":"error: <dns> failed","error":"internal error"}`,
 		},
 	} {
 		if got := encode(t, tt.job); got != tt.want {

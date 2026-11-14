@@ -203,6 +203,41 @@
   </tbody>
 </table>
 {{end}}
+{{with .Lookyloo}}{{$ly := .}}
+<h3>Lookyloo</h3>
+<p class="meta">{{.CapturesRead}} of {{.CapturesFound}} captures on <a href="{{.Instance}}">{{.Instance}}</a>{{if .Truncated}}, the latest read{{end}}{{with .Submitted}} · submitted <a href="{{$ly.TreeURL .}}"><code>{{.}}</code></a>{{end}}. Only what was captured: an absence proves nothing.</p>
+<table>
+  <thead><tr><th>Time (UTC)</th><th>Capture</th><th>URL</th><th>Redirects</th></tr></thead>
+  <tbody>
+  {{range .Captures}}
+    <tr>
+      <td class="nowrap">{{ts .Time}}</td>
+      <td><a href="{{$ly.TreeURL .UUID}}">{{or .Title .UUID}}</a></td>
+      <td><code>{{.URL}}</code>{{if ne .FinalURL .URL}}<br>→ <code>{{.FinalURL}}</code>{{end}}</td>
+      <td>{{range .Redirects}}<code>{{.}}</code><br>{{else}}—{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4" class="empty">No capture of this name.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{with .Trackers}}
+<table>
+  <thead><tr><th>Kind</th><th>ID</th><th>First (UTC)</th><th>Last (UTC)</th><th>Captures</th></tr></thead>
+  <tbody>
+  {{range .}}
+    <tr>
+      <td>{{.Kind}}</td>
+      <td><code>{{.ID}}</code></td>
+      <td class="nowrap">{{ts .FirstSeen}}</td>
+      <td class="nowrap">{{ts .LastSeen}}</td>
+      <td>{{.Captures}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
 {{end}}
 {{if $.Can "analyst"}}{{template "link_dialog" $}}{{end}}
 {{end}}

@@ -2,6 +2,7 @@
 :root {
   --cx-campaign: #d1495b;
   --cx-cert: var(--graph-cert);
+  --cx-tracker: var(--graph-tracker);
   --cx-ns_set: var(--graph-nsset);
   --cx-ip: var(--graph-ip);
   --cx-cname: #2a9d8f;
@@ -25,6 +26,7 @@ main:has(> .cx) { max-width: none; }
 .cx-kind { white-space: nowrap; }
 
 .cx-line-cert { border-top: 2px dashed var(--cx-cert); }
+.cx-line-tracker { border-top: 2px solid var(--cx-tracker); }
 .cx-line-ns_set { border-top: 2px solid var(--cx-ns_set); }
 .cx-line-ip { border-top: 2px solid var(--cx-ip); }
 .cx-line-cname { border-top: 2px solid var(--cx-cname); }

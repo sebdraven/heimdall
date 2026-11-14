@@ -33,6 +33,7 @@ type enrichCounts struct {
 	RDAP       int `json:"rdap"`
 	CT         int `json:"ct"`
 	Subdomains int `json:"subdomains"`
+	Lookyloo   int `json:"lookyloo"`
 }
 
 // enrichSummary ends an enrichment job; vtjob.js shows Summary.
@@ -44,7 +45,7 @@ type enrichSummary struct {
 }
 
 // summarize counts the values of each source: DNS values, 1 for a
-// registration, the certificates and the subdomains.
+// registration, the certificates, the subdomains and the captures read.
 func summarize(r enrich.Result) enrichSummary {
 	var c enrichCounts
 	if r.DNS != nil {
@@ -61,12 +62,24 @@ func summarize(r enrich.Result) enrichSummary {
 	if r.Subdomains != nil {
 		c.Subdomains = len(r.Subdomains.Names)
 	}
-	counts := map[string]int{enrich.SourceDNS: c.DNS, enrich.SourceRDAP: c.RDAP, enrich.SourceCT: c.CT, enrich.SourceSubdomains: c.Subdomains}
+	if r.Lookyloo != nil {
+		c.Lookyloo = r.Lookyloo.CapturesRead
+	}
+	counts := map[string]int{
+		enrich.SourceDNS: c.DNS, enrich.SourceRDAP: c.RDAP, enrich.SourceCT: c.CT, enrich.SourceSubdomains: c.Subdomains,
+		enrich.SourceLookyloo: c.Lookyloo,
+	}
 	parts := make([]string, 0, len(enrich.Sources))
 	for _, src := range enrich.Sources {
-		if _, failed := r.Errors[src]; failed {
+		msg, failed := r.Errors[src]
+		switch {
+		case src == enrich.SourceLookyloo && msg == enrich.ErrLookylooNotConfigured.Error():
+			parts = append(parts, msg)
+		case failed:
 			parts = append(parts, src+" failed")
-		} else {
+		case src == enrich.SourceLookyloo && c.Lookyloo == 0:
+			parts = append(parts, "lookyloo: no capture")
+		default:
 			parts = append(parts, fmt.Sprintf("%s %d", src, counts[src]))
 		}
 	}
@@ -151,6 +164,7 @@ type enrichJSON struct {
 	RDAP       *enrich.RDAP       `json:"rdap"`
 	CT         *enrich.CT         `json:"ct"`
 	Subdomains *enrich.Subdomains `json:"subdomains"`
+	Lookyloo   *enrich.Lookyloo   `json:"lookyloo"`
 	Errors     map[string]string  `json:"errors"`
 	Graph      graphJSON          `json:"graph"`
 }
@@ -162,7 +176,7 @@ func toEnrichJSON(r enrich.Result, g graphJSON) enrichJSON {
 	}
 	return enrichJSON{
 		FQDN: r.FQDN, FetchedAt: r.FetchedAt.UTC(), Status: r.Status, DNS: r.DNS, Zone: r.Zone, RDAP: r.RDAP,
-		CT: r.CT, Subdomains: r.Subdomains, Errors: errs, Graph: g,
+		CT: r.CT, Subdomains: r.Subdomains, Lookyloo: r.Lookyloo, Errors: errs, Graph: g,
 	}
 }
 
@@ -188,8 +202,9 @@ func (s *server) apiDomainEnrich(w http.ResponseWriter, r *http.Request) {
 }
 
 // enrichGraph draws an enrichment around its name: the addresses, CDN ones
-// aside, the CNAME and MX targets, the NS set of the zone, the subdomains
-// and the names of the certificates, wildcards as their base name.
+// aside, the CNAME and MX targets, the NS set of the zone, the subdomains,
+// the names of the certificates, wildcards as their base name, the final
+// hosts of the captures that went through the name and their trackers.
 func enrichGraph(r enrich.Result, cl *cdn.Classifier, limit int) graphJSON {
 	b := newGraphBuilder(limit, false)
 	from := domainNode(r.FQDN)
@@ -232,6 +247,19 @@ func enrichGraph(r enrich.Result, cl *cdn.Classifier, limit int) graphJSON {
 			if name, err := resolver.NormalizeFQDN(strings.TrimPrefix(n, "*.")); err == nil && name != r.FQDN {
 				b.edge(from, domainNode(name), edgeCert)
 			}
+		}
+	}
+	if r.Lookyloo != nil {
+		for _, c := range r.Lookyloo.Captures {
+			if !c.Visits(r.FQDN) {
+				continue
+			}
+			if to, ok := hostNode(enrich.URLHost(c.FinalURL)); ok && to.ID != from.ID {
+				b.edge(from, to, edgeRedirect)
+			}
+		}
+		for _, t := range r.Lookyloo.Trackers {
+			b.edge(from, trackerNode(t.Kind, t.ID), edgeTracker)
 		}
 	}
 	b.g.ExcludedCDN = len(excluded)

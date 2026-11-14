@@ -1,6 +1,7 @@
 // Package enrich gathers what can be learnt of a name on demand: its live
 // DNS records and zone, its RDAP registration, the names of its
-// Certificate Transparency logs and the subdomains in passive DNS.
+// Certificate Transparency logs, the subdomains in passive DNS and its past
+// captures in Lookyloo.
 package enrich
 
 import (
@@ -25,10 +26,11 @@ const (
 	SourceRDAP       = "rdap"
 	SourceCT         = "ct"
 	SourceSubdomains = "subdomains"
+	SourceLookyloo   = "lookyloo"
 )
 
 // Sources lists the sources of an enrichment.
-var Sources = []string{SourceDNS, SourceRDAP, SourceCT, SourceSubdomains}
+var Sources = []string{SourceDNS, SourceRDAP, SourceCT, SourceSubdomains, SourceLookyloo}
 
 // MaxSubdomains caps the subdomains read from passive DNS.
 const MaxSubdomains = 500
@@ -37,7 +39,8 @@ const MaxSubdomains = 500
 var ErrNoResolver = errors.New("no active resolver")
 
 // Result is an enrichment. A source that failed is nil, its message in
-// Errors, except CT, which keeps the certificates read before a rate limit.
+// Errors, except CT and Lookyloo, which keep what they read before the
+// error.
 type Result struct {
 	FQDN       string
 	FetchedAt  time.Time
@@ -47,6 +50,7 @@ type Result struct {
 	RDAP       *RDAP
 	CT         *CT
 	Subdomains *Subdomains
+	Lookyloo   *Lookyloo
 	Errors     map[string]string
 }
 
@@ -77,17 +81,24 @@ type PassiveDNS interface {
 	SubdomainsOf(ctx context.Context, zone string, limit int) ([]Subdomain, error)
 }
 
-type Enricher struct {
-	DNS  Resolver
-	RDAP Registry
-	CT   CTLog
-	PDNS PassiveDNS
-	Now  func() time.Time
+type CaptureArchive interface {
+	Captures(ctx context.Context, fqdn string) (*Lookyloo, error)
 }
 
-// Run queries the four sources at once, DNS through server, empty when no
+// Enricher queries the sources; Lookyloo is nil when not configured.
+type Enricher struct {
+	DNS      Resolver
+	RDAP     Registry
+	CT       CTLog
+	PDNS     PassiveDNS
+	Lookyloo CaptureArchive
+	Now      func() time.Time
+}
+
+// Run queries the five sources at once, DNS through server, empty when no
 // resolver is enabled. CT and passive DNS search below the zone found by
-// DNS, or below the registrable domain of fqdn.
+// DNS, or below the registrable domain of fqdn; Lookyloo searches fqdn. A
+// Lookyloo not configured fails without counting in the status.
 func (e *Enricher) Run(ctx context.Context, fqdn, server string) Result {
 	res := Result{FQDN: fqdn, Errors: map[string]string{}}
 	var mu sync.Mutex
@@ -152,6 +163,17 @@ func (e *Enricher) Run(ctx context.Context, fqdn, server string) Result {
 		}
 		res.Subdomains = &Subdomains{Zone: scope, Names: names, Truncated: len(names) == MaxSubdomains}
 	})
+	wg.Go(func() {
+		if e.Lookyloo == nil {
+			fail(SourceLookyloo, ErrLookylooNotConfigured)
+			return
+		}
+		l, err := e.Lookyloo.Captures(ctx, fqdn)
+		if err != nil {
+			fail(SourceLookyloo, err)
+		}
+		res.Lookyloo = l
+	})
 	wg.Wait()
 
 	now := time.Now
@@ -159,10 +181,17 @@ func (e *Enricher) Run(ctx context.Context, fqdn, server string) Result {
 		now = e.Now
 	}
 	res.FetchedAt = now().UTC()
-	switch len(res.Errors) {
-	case 0:
-		res.Status, res.Errors = StatusOK, nil
-	case len(Sources):
+	failed, sources := len(res.Errors), len(Sources)
+	if e.Lookyloo == nil {
+		failed, sources = failed-1, sources-1
+	}
+	switch {
+	case failed == 0:
+		res.Status = StatusOK
+		if len(res.Errors) == 0 {
+			res.Errors = nil
+		}
+	case failed == sources:
 		res.Status = StatusError
 	default:
 		res.Status = StatusPartial

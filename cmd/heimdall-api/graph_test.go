@@ -629,15 +629,15 @@ func TestAddSubdomainsCaps(t *testing.T) {
 func TestAPIGraphSubdomains(t *testing.T) {
 	s, f := graphTestServer(t)
 	_, plain := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example?subs=0", "fqdn", "www.x.example")
-	if len(f.asked) != 0 {
-		t.Errorf("subs=0 read the enrichments of %v", f.asked)
+	if len(f.asked) != 1 {
+		t.Errorf("subs=0 read the enrichments %d times, want once for the trackers", len(f.asked))
 	}
 	_, none := serveGraph(t, s, s.apiGraphDomain, "/api/graph/domain/www.x.example", "fqdn", "www.x.example")
 	if none != plain {
 		t.Errorf("without enrichment or parent:\n%s\nwant the graph unchanged\n%s", none, plain)
 	}
-	if len(f.asked) != 1 || strings.Join(f.asked[0], " ") != "www.x.example cdn.y.example" {
-		t.Errorf("enrichments read %v, want one read of the domains of the graph", f.asked)
+	if len(f.asked) != 2 || strings.Join(f.asked[1], " ") != "www.x.example cdn.y.example" {
+		t.Errorf("enrichments read %v, want one read of the domains of the graph per request", f.asked)
 	}
 
 	f.enriched = map[string]enrich.Result{"www.x.example": {
@@ -668,5 +668,54 @@ func TestAPIGraphSubdomains(t *testing.T) {
 	}
 	if _, body := serveGraph(t, s, s.apiGraphCampaign, "/api/graph/campaign/7?subs=0", "id", "7"); strings.Contains(body, `"SUB"`) {
 		t.Errorf("campaign graph with subs=0 has SUB edges: %s", body)
+	}
+}
+
+func lookylooTrackers(ids ...string) enrich.Result {
+	l := &enrich.Lookyloo{}
+	for _, id := range ids {
+		kind, v, _ := strings.Cut(id, " ")
+		l.Trackers = append(l.Trackers, enrich.TrackerSeen{Kind: kind, ID: v, Captures: 1})
+	}
+	return enrich.Result{Lookyloo: l}
+}
+
+func TestAddTrackers(t *testing.T) {
+	enriched := map[string]enrich.Result{
+		"a.example": lookylooTrackers("gads AW-11021906314", "ua UA-132944514-1"),
+		"b.example": lookylooTrackers("gads AW-11021906314"),
+		"c.example": {Subdomains: &enrich.Subdomains{Names: []enrich.Subdomain{{Name: "www.c.example"}}}},
+	}
+	g := addTrackers(domainGraph([]string{"a.example", "b.example", "c.example"}), enriched, graphMaxNodes)
+	nodes, edges := graphSummary(g)
+	if want := "d:a.example d:b.example d:c.example t:gads:AW-11021906314 t:ua:UA-132944514-1"; nodes != want {
+		t.Errorf("nodes = %s\nwant    %s", nodes, want)
+	}
+	if want := "d:a.example>t:gads:AW-11021906314/TRACKER d:a.example>t:ua:UA-132944514-1/TRACKER d:b.example>t:gads:AW-11021906314/TRACKER"; edges != want {
+		t.Errorf("edges = %s\nwant    %s, the shared identifier on one node", edges, want)
+	}
+
+	capped := addTrackers(domainGraph([]string{"a.example", "b.example"}), enriched, 3)
+	if nodes, _ := graphSummary(capped); nodes != "d:a.example d:b.example t:gads:AW-11021906314" || !capped.Truncated {
+		t.Errorf("node limit: nodes %q truncated %v", nodes, capped.Truncated)
+	}
+}
+
+func TestAPIGraphTrackers(t *testing.T) {
+	s, f := graphTestServer(t)
+	f.enriched = map[string]enrich.Result{"www.x.example": lookylooTrackers("gads AW-11021906314")}
+	for _, target := range []string{"/api/graph/domain/www.x.example?subs=0", "/api/graph/domain/www.x.example"} {
+		_, body := serveGraph(t, s, s.apiGraphDomain, target, "fqdn", "www.x.example")
+		for _, want := range []string{
+			`{"id":"t:gads:AW-11021906314","kind":"tracker","label":"gads AW-11021906314","watched":false,"campaign":"","href":"","source":"heimdall"}`,
+			`{"from":"d:www.x.example","to":"t:gads:AW-11021906314","kind":"TRACKER"}`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s lacks %s: %s", target, want, body)
+			}
+		}
+	}
+	if _, body := serveGraph(t, s, s.apiGraphCampaign, "/api/graph/campaign/7?subs=0", "id", "7"); !strings.Contains(body, `"kind":"TRACKER"`) {
+		t.Errorf("campaign graph lacks the TRACKER edges: %s", body)
 	}
 }

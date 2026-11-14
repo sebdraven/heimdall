@@ -304,7 +304,7 @@
   };
 
   // The kind drawn for parallel edges of several kinds, strongest first.
-  const kindPriority = ['SUB', 'CNAME', 'A', 'AAAA', 'MX', 'NS_SET', 'CERT', 'VT'];
+  const kindPriority = ['SUB', 'TRACKER', 'CNAME', 'REDIRECT', 'A', 'AAAA', 'MX', 'NS_SET', 'CERT', 'VT'];
 
   // shownId is the id of the node drawn for node: itself, or the group that
   // hides it.
@@ -526,6 +526,7 @@
           domain: { color: color('--graph-domain') },
           ip: { color: color('--graph-ip') },
           nsset: { color: color('--graph-nsset') },
+          tracker: { color: color('--graph-tracker') },
           vt: { color: color('--graph-vt-node') },
         },
         defaultNodeStyle: {
@@ -545,6 +546,8 @@
           MX: { strokeColor: color('--graph-mx') },
           CERT: { dashed: true, animateDash: false, strokeColor: color('--graph-cert') },
           SUB: { strokeColor: color('--graph-sub') },
+          REDIRECT: { strokeColor: color('--graph-redirect') },
+          TRACKER: { strokeColor: color('--graph-tracker') },
         },
       },
       callbacks: {

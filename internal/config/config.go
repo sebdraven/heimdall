@@ -44,6 +44,12 @@ type Config struct {
 	OnypheURL         string
 	OnypheCTWindow    string
 
+	// LookylooURL empty disables the Lookyloo source.
+	LookylooURL         string
+	LookylooMaxCaptures int
+	LookylooSubmit      bool
+	LookylooMaxAge      time.Duration
+
 	LogLevel slog.Level
 }
 
@@ -81,6 +87,11 @@ func Load() (*Config, error) {
 		OnypheURL:         p.str("ONYPHE_URL", "https://www.onyphe.io/api/v2"),
 		OnypheCTWindow:    p.str("ONYPHE_CT_WINDOW", "-since:48M"),
 
+		LookylooURL:         p.str("LOOKYLOO_URL", ""),
+		LookylooMaxCaptures: p.int("LOOKYLOO_MAX_CAPTURES", 10),
+		LookylooSubmit:      p.bool("LOOKYLOO_SUBMIT", false),
+		LookylooMaxAge:      p.duration("LOOKYLOO_MAX_AGE", 720*time.Hour),
+
 		LogLevel: p.level("LOG_LEVEL", slog.LevelInfo),
 	}
 	if c.PGDSN == "" {
@@ -97,6 +108,8 @@ func Load() (*Config, error) {
 	p.positive("SESSION_TTL", int(c.SessionTTL))
 	p.positive("VT_DAILY_BUDGET", c.VTDailyBudget)
 	p.positive("VT_TTL", int(c.VTTTL))
+	p.positive("LOOKYLOO_MAX_CAPTURES", c.LookylooMaxCaptures)
+	p.positive("LOOKYLOO_MAX_AGE", int(c.LookylooMaxAge))
 	if err := errors.Join(p.errs...); err != nil {
 		return nil, err
 	}

@@ -138,3 +138,37 @@ func TestEnrichCertsAndRegistrations(t *testing.T) {
 		t.Errorf("registrations = %+v", regs)
 	}
 }
+
+func TestEnrichTrackers(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 13, 6, 30, 20, 390000000, time.UTC)
+	c, err := s.CreateCampaign(ctx, "spynote", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ImportDomains(ctx, []string{"a.example", "b.example"}, &c.ID, 300, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []enrich.Result{
+		{FQDN: "a.example", FetchedAt: at, Status: enrich.StatusOK, Lookyloo: &enrich.Lookyloo{Trackers: []enrich.TrackerSeen{
+			{Kind: "gads", ID: "AW-11021906314", FirstSeen: at.AddDate(0, -5, 0), LastSeen: at, Captures: 2},
+			{Kind: "", ID: "x"},
+		}}},
+		{FQDN: "b.example", FetchedAt: at, Status: enrich.StatusPartial},
+		// Not watched.
+		{FQDN: "x.example", FetchedAt: at, Status: enrich.StatusOK, Lookyloo: &enrich.Lookyloo{Trackers: []enrich.TrackerSeen{{Kind: "ua", ID: "UA-1-1"}}}},
+	} {
+		if err := s.SaveDomainEnrich(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.EnrichTrackers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].FQDN != "a.example" || got[0].Kind != "gads" || got[0].ID != "AW-11021906314" ||
+		got[0].FirstSeen == nil || !got[0].FirstSeen.Equal(at.AddDate(0, -5, 0)) || !got[0].LastSeen.Equal(at) {
+		t.Errorf("trackers = %+v", got)
+	}
+}

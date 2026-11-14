@@ -49,6 +49,7 @@ type correlationPG interface {
 	Campaigns(ctx context.Context) ([]pg.Campaign, error)
 	Domains(ctx context.Context, campaignID *int64) ([]pg.Domain, error)
 	EnrichCerts(ctx context.Context) ([]pg.EnrichCert, error)
+	EnrichTrackers(ctx context.Context) ([]pg.EnrichTracker, error)
 	EnrichRegistrations(ctx context.Context) ([]pg.EnrichRegistration, error)
 	UpsertCorrelationLinks(ctx context.Context, links []pg.CorrelationLink, at time.Time) ([]pg.CorrelationLink, error)
 	CorrelationLinks(ctx context.Context, f pg.CorrelationFilter) ([]pg.CorrelationLink, error)
@@ -219,6 +220,17 @@ func (s *server) loadCorrelationInput(ctx context.Context) (correlate.Input, err
 			cert.NotBefore, cert.NotAfter = c.NotBefore.UTC(), c.NotAfter.UTC()
 		}
 		in.Certs = append(in.Certs, cert)
+	}
+	trackers, err := s.corr.EnrichTrackers(ctx)
+	if err != nil {
+		return in, fmt.Errorf("trackers: %w", err)
+	}
+	for _, t := range trackers {
+		tr := correlate.Tracker{Domain: t.FQDN, Kind: t.Kind, ID: t.ID}
+		if t.FirstSeen != nil && t.LastSeen != nil {
+			tr.FirstSeen, tr.LastSeen = t.FirstSeen.UTC(), t.LastSeen.UTC()
+		}
+		in.Trackers = append(in.Trackers, tr)
 	}
 	regs, err := s.corr.EnrichRegistrations(ctx)
 	if err != nil {
@@ -522,6 +534,9 @@ func valueNode(kind, value string) graphNode {
 		return domainNode(value)
 	case correlate.KindCert:
 		return graphNode{ID: "cert:" + value, Kind: "cert", Label: value, Source: sourceHeimdall}
+	case correlate.KindTracker:
+		k, id, _ := strings.Cut(value, ":")
+		return trackerNode(k, id)
 	case correlate.KindSOA:
 		return graphNode{ID: "soa:" + value, Kind: "soa", Label: value, Source: sourceHeimdall}
 	}
@@ -626,8 +641,11 @@ func correlationKinds() []correlationKindView {
 	out := make([]correlationKindView, 0, len(correlate.Kinds))
 	for _, k := range correlate.Kinds {
 		w := strconv.FormatFloat(correlate.Weight(k), 'f', 1, 64)
-		if k == correlate.KindIP {
+		switch k {
+		case correlate.KindIP:
 			w += "/n"
+		case correlate.KindTracker:
+			w = strconv.FormatFloat(correlate.WeightTrackerAnalytics, 'f', 1, 64) + "–" + w
 		}
 		out = append(out, correlationKindView{Kind: k, Weight: w})
 	}

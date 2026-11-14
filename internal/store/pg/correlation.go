@@ -136,6 +136,34 @@ func (s *Store) EnrichCerts(ctx context.Context) ([]EnrichCert, error) {
 	})
 }
 
+// EnrichTracker is a tracker of the Lookyloo captures of the stored
+// enrichment of a watched domain.
+type EnrichTracker struct {
+	FQDN      string
+	Kind      string
+	ID        string
+	FirstSeen *time.Time
+	LastSeen  *time.Time
+}
+
+// EnrichTrackers returns the trackers of the stored enrichments of watched
+// domains.
+func (s *Store) EnrichTrackers(ctx context.Context) ([]EnrichTracker, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT e.fqdn, t->>'kind', t->>'id', (t->>'first_seen')::timestamptz, (t->>'last_seen')::timestamptz
+		FROM domain_enrich e
+		JOIN domains d ON d.fqdn = e.fqdn
+		CROSS JOIN LATERAL jsonb_array_elements(
+			CASE WHEN jsonb_typeof(e.lookyloo->'trackers') = 'array' THEN e.lookyloo->'trackers' ELSE '[]'::jsonb END) AS t
+		WHERE coalesce(t->>'kind', '') <> '' AND coalesce(t->>'id', '') <> ''
+		ORDER BY e.fqdn`)
+	return collect(rows, err, func(r pgx.Row) (EnrichTracker, error) {
+		var t EnrichTracker
+		err := r.Scan(&t.FQDN, &t.Kind, &t.ID, &t.FirstSeen, &t.LastSeen)
+		return t, err
+	})
+}
+
 // EnrichRegistration is the RDAP registration of the stored enrichment of a
 // watched domain.
 type EnrichRegistration struct {

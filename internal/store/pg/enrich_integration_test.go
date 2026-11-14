@@ -108,6 +108,56 @@ func TestDomainEnrichRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDomainEnrichLookyloo(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 13, 6, 30, 20, 390000000, time.UTC)
+	uuid := "0b6e7a52-6f0d-4a39-9d0c-3c1b1f6f8a01"
+	ly := &enrich.Lookyloo{
+		Instance: "http://citizen-lab.tail399dd.ts.net:5100", CapturesFound: 3, CapturesRead: 1, Truncated: true, Submitted: &uuid,
+		Captures: []enrich.Capture{{UUID: uuid, Time: at, URL: "https://jjspy.com/", Title: "JJSpy", FinalURL: "https://www.jjspy.com/",
+			Redirects: []string{"https://www.jjspy.com/"}, Hostnames: []string{"jjspy.com", "www.jjspy.com"},
+			Trackers: []enrich.Tracker{{Kind: "ua", ID: "UA-132944514-1"}}}},
+		Trackers: []enrich.TrackerSeen{{Kind: "ua", ID: "UA-132944514-1", FirstSeen: at, LastSeen: at, Captures: 1}},
+		Hosts:    []enrich.CaptureHost{{Name: "jjspy.com", FirstSeen: at, LastSeen: at}},
+	}
+	if err := s.SaveDomainEnrich(ctx, enrich.Result{FQDN: "jjspy.com", FetchedAt: at, Status: enrich.StatusPartial, Lookyloo: ly,
+		Errors: map[string]string{enrich.SourceLookyloo: "lookyloo urls: HTTP 404"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.DomainEnrich(ctx, "jjspy.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := got.Lookyloo
+	if l == nil || l.Instance != ly.Instance || l.CapturesFound != 3 || l.CapturesRead != 1 || !l.Truncated || l.Submitted == nil || *l.Submitted != uuid ||
+		got.Errors[enrich.SourceLookyloo] != "lookyloo urls: HTTP 404" {
+		t.Fatalf("lookyloo %+v errors %v", l, got.Errors)
+	}
+	if c := l.Captures[0]; c.UUID != uuid || !c.Time.Equal(at) || c.FinalURL != "https://www.jjspy.com/" || c.Redirects[0] != "https://www.jjspy.com/" ||
+		len(c.Hostnames) != 2 || c.Trackers[0] != (enrich.Tracker{Kind: "ua", ID: "UA-132944514-1"}) {
+		t.Errorf("capture %+v", c)
+	}
+	if tr := l.Trackers[0]; tr.ID != "UA-132944514-1" || !tr.FirstSeen.Equal(at) || tr.Captures != 1 || l.Hosts[0].Name != "jjspy.com" {
+		t.Errorf("trackers %+v hosts %+v", l.Trackers, l.Hosts)
+	}
+
+	reduced, err := s.DomainEnrichments(ctx, []string{"jjspy.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := reduced["jjspy.com"].Lookyloo; r == nil || r.Captures != nil || r.Hosts != nil || len(r.Trackers) != 1 || r.Trackers[0].ID != "UA-132944514-1" {
+		t.Errorf("reduced lookyloo %+v, want the trackers alone", r)
+	}
+
+	if err := s.SaveDomainEnrich(ctx, enrich.Result{FQDN: "jjspy.com", FetchedAt: at, Status: enrich.StatusOK}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.DomainEnrich(ctx, "jjspy.com"); err != nil || got.Lookyloo != nil {
+		t.Errorf("replaced without Lookyloo: %+v, %v", got.Lookyloo, err)
+	}
+}
+
 func TestDomainEnrichments(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
