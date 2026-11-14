@@ -40,6 +40,7 @@ type fakeCorrStore struct {
 	domains   []pg.Domain
 	owned     []ch.Owned
 	certs     []pg.EnrichCert
+	trackers  []pg.EnrichTracker
 	history   map[correlate.Key]pg.CorrelationLink
 	nextID    int64
 	upserts   int
@@ -119,6 +120,8 @@ func (f *fakeCorrStore) Campaigns(context.Context) ([]pg.Campaign, error) {
 func (f *fakeCorrStore) Domains(context.Context, *int64) ([]pg.Domain, error) { return f.domains, nil }
 
 func (f *fakeCorrStore) EnrichCerts(context.Context) ([]pg.EnrichCert, error) { return f.certs, nil }
+
+func (f *fakeCorrStore) EnrichTrackers(context.Context) ([]pg.EnrichTracker, error) { return f.trackers, nil }
 
 func (f *fakeCorrStore) EnrichRegistrations(context.Context) ([]pg.EnrichRegistration, error) {
 	return nil, nil
@@ -233,6 +236,41 @@ func TestRunCorrelation(t *testing.T) {
 	}
 	if f.upserts != 2 || len(f.history) != 4 {
 		t.Errorf("%d upserts, %d links in history", f.upserts, len(f.history))
+	}
+}
+
+func TestCorrelationTrackers(t *testing.T) {
+	s, f := corrTestServer(t)
+	f.owned, f.certs = nil, nil
+	first, last := corrT0, corrT0.AddDate(0, 0, 10)
+	f.trackers = []pg.EnrichTracker{
+		{FQDN: "a.example", Kind: "gads", ID: "AW-11021906314", FirstSeen: &first, LastSeen: &last},
+		{FQDN: "c.example", Kind: "gads", ID: "AW-11021906314", FirstSeen: &first, LastSeen: &last},
+		{FQDN: "a.example", Kind: "ua", ID: "UA-132944514-1"},
+		{FQDN: "b.example", Kind: "ua", ID: "UA-132944514-1"},
+		{FQDN: "a.example", Kind: "payment", ID: "stripe"},
+		{FQDN: "b.example", Kind: "payment", ID: "stripe"},
+	}
+	runAt(t, s, corrRun)
+	at := corrRun.Format(time.RFC3339)
+	want := "tracker gads:AW-11021906314 a.example/7 c.example/9 1 " + at + " " + at + "\n" +
+		"tracker ua:UA-132944514-1 a.example/7 b.example/8 0.9 " + at + " " + at
+	if got := evidenceLines(s.corrSnap.Load().Evidence); got != want {
+		t.Errorf("links =\n%s\nwant\n%s", got, want)
+	}
+
+	_, body := serveCorr(s.apiCorrelationGraph, "/api/correlations/graph?expand=7,9&kinds=tracker")
+	for _, want := range []string{
+		`{"id":"t:gads:AW-11021906314","kind":"tracker","label":"gads AW-11021906314"`,
+		`{"from":"d:a.example","to":"t:gads:AW-11021906314","kind":"tracker"}`,
+		`{"from":"d:c.example","to":"t:gads:AW-11021906314","kind":"tracker"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graph lacks %s: %s", want, body)
+		}
+	}
+	if code, _ := serveCorr(s.apiCorrelations, "/api/correlations?kinds=tracker"); code != http.StatusOK {
+		t.Errorf("kinds=tracker: status %d", code)
 	}
 }
 
@@ -443,6 +481,7 @@ func TestRenderCorrelationsPage(t *testing.T) {
 		`data-source="/correlations/data" data-graph="/correlations/graph/data" data-pair="/correlations/"`,
 		`id="cx-matrix"`, `id="cx-graph"`, `id="cx-pair"`, `id="cx-new"`, "New links (7 days)",
 		`value="cert" checked`, `cx-line-ns_set`, `<span class="meta">0.8/n</span>`, `<span class="meta">1.0</span>`,
+		`value="tracker" checked`, `cx-line-tracker`, `<span class="meta">0.6–1.0</span>`,
 		"truncated at 500 nodes",
 	} {
 		if !strings.Contains(body, want) {

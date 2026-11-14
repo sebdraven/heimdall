@@ -142,9 +142,10 @@ func TestEnrichDomainJob(t *testing.T) {
 
 	close(release)
 	waitEnrichJob(t, s, "www.x.example")
-	summary := "partial: dns 1, rdap failed, ct 1, subdomains 2"
+	summary := "partial: dns 1, rdap failed, ct 1, subdomains 2, lookyloo not configured"
 	done := `{"job":"domain:www.x.example","state":"done","started_at":"2026-11-04T12:00:00Z","finished_at":"2026-11-04T12:00:00Z",` +
-		`"status":"partial","counts":{"dns":1,"rdap":0,"ct":1,"subdomains":2},"errors":{"rdap":"rdap x.example: HTTP 404"},"summary":"` + summary + `"}`
+		`"status":"partial","counts":{"dns":1,"rdap":0,"ct":1,"subdomains":2,"lookyloo":0},` +
+		`"errors":{"lookyloo":"lookyloo not configured","rdap":"rdap x.example: HTTP 404"},"summary":"` + summary + `"}`
 	if _, body := serveAPI(h, http.MethodGet, job, "viewer"); body != done {
 		t.Errorf("GET after:\n%s\nwant\n%s", body, done)
 	}
@@ -176,7 +177,7 @@ func TestEnrichDomainJob(t *testing.T) {
 	}
 	for _, key := range []string{
 		`"dns":{"resolver":"9.9.9.9:53","records":[{"qtype":"A","rcode":"NOERROR","ttl":60,"rdata":["192.0.2.1"]}`, `"zone":null`, `"rdap":null`,
-		`"names":["*.x.example"],"sources":["certspotter","onyphe"]}`,
+		`"names":["*.x.example"],"sources":["certspotter","onyphe"]}`, `"lookyloo":null`,
 	} {
 		if !strings.Contains(body, key) {
 			t.Errorf("data lacks %s", key)
@@ -272,6 +273,34 @@ func TestEnrichGraph(t *testing.T) {
 	}
 }
 
+func TestEnrichGraphLookyloo(t *testing.T) {
+	res := enrich.Result{
+		FQDN: "jjspy.com",
+		CT:   &enrich.CT{Names: []string{"www.jjspy.com"}},
+		Lookyloo: &enrich.Lookyloo{
+			Captures: []enrich.Capture{
+				{UUID: "a", URL: "https://jjspy.com/", FinalURL: "https://www.jjspy.com/", Redirects: []string{"https://www.jjspy.com/"}},
+				{UUID: "b", URL: "https://jjspy.com/", FinalURL: "https://jjspy.com/"},
+				{UUID: "c", URL: "http://jjspy.com/", FinalURL: "https://LANDING.example./x", Redirects: []string{"https://landing.example/x"}},
+				{UUID: "d", URL: "https://jjspy.com/", FinalURL: "http://192.0.2.7/", Redirects: []string{"http://192.0.2.7/"}},
+				{UUID: "e", URL: "https://other.example/", FinalURL: "https://elsewhere.example/", Redirects: []string{"https://elsewhere.example/"}},
+			},
+			Trackers: []enrich.TrackerSeen{{Kind: "gads", ID: "AW-11021906314", Captures: 2}, {Kind: "ua", ID: "UA-132944514-1", Captures: 1}},
+		},
+	}
+	nodes, edges := graphSummary(enrichGraph(res, testCDN(), graphMaxNodes))
+	if want := "d:jjspy.com d:www.jjspy.com d:landing.example ip:192.0.2.7 t:gads:AW-11021906314 t:ua:UA-132944514-1"; nodes != want {
+		t.Errorf("nodes = %s\nwant    %s", nodes, want)
+	}
+	if want := "d:jjspy.com>d:www.jjspy.com/CERT d:jjspy.com>d:www.jjspy.com/REDIRECT d:jjspy.com>d:landing.example/REDIRECT d:jjspy.com>ip:192.0.2.7/REDIRECT " +
+		"d:jjspy.com>t:gads:AW-11021906314/TRACKER d:jjspy.com>t:ua:UA-132944514-1/TRACKER"; edges != want {
+		t.Errorf("edges = %s\nwant    %s", edges, want)
+	}
+	if n := enrichGraph(res, testCDN(), graphMaxNodes).Nodes[4]; n.Kind != nodeTracker || n.Label != "gads AW-11021906314" || n.Href != "" {
+		t.Errorf("tracker node %+v", n)
+	}
+}
+
 func TestSummarize(t *testing.T) {
 	sum := summarize(enrich.Result{
 		Status:     enrich.StatusOK,
@@ -279,9 +308,80 @@ func TestSummarize(t *testing.T) {
 		RDAP:       &enrich.RDAP{},
 		CT:         &enrich.CT{Total: 700, Certificates: make([]enrich.Certificate, 500)},
 		Subdomains: &enrich.Subdomains{Names: make([]enrich.Subdomain, 4)},
+		Lookyloo:   &enrich.Lookyloo{CapturesFound: 12, CapturesRead: 10},
 	})
-	if sum.Counts != (enrichCounts{DNS: 3, RDAP: 1, CT: 700, Subdomains: 4}) || sum.Summary != "ok: dns 3, rdap 1, ct 700, subdomains 4" || sum.Errors != nil {
+	if sum.Counts != (enrichCounts{DNS: 3, RDAP: 1, CT: 700, Subdomains: 4, Lookyloo: 10}) || sum.Summary != "ok: dns 3, rdap 1, ct 700, subdomains 4, lookyloo 10" || sum.Errors != nil {
 		t.Errorf("summary %+v", sum)
+	}
+
+	for _, tt := range []struct {
+		desc string
+		r    enrich.Result
+		want string
+	}{
+		{"no capture", enrich.Result{Status: enrich.StatusOK, Lookyloo: &enrich.Lookyloo{Captures: []enrich.Capture{}}},
+			"ok: dns 0, rdap 0, ct 0, subdomains 0, lookyloo: no capture"},
+		{"not configured", enrich.Result{Status: enrich.StatusOK, Errors: map[string]string{enrich.SourceLookyloo: "lookyloo not configured"}},
+			"ok: dns 0, rdap 0, ct 0, subdomains 0, lookyloo not configured"},
+		{"failed", enrich.Result{Status: enrich.StatusPartial, Lookyloo: &enrich.Lookyloo{CapturesRead: 2},
+			Errors: map[string]string{enrich.SourceLookyloo: "lookyloo urls: HTTP 404"}},
+			"partial: dns 0, rdap 0, ct 0, subdomains 0, lookyloo failed"},
+	} {
+		if got := summarize(tt.r).Summary; got != tt.want {
+			t.Errorf("%s: %q, want %q", tt.desc, got, tt.want)
+		}
+	}
+}
+
+func TestRenderDomainLookyloo(t *testing.T) {
+	s := testServer(t)
+	at := time.Date(2026, 11, 13, 6, 30, 20, 390000000, time.UTC)
+	old := time.Date(2026, 6, 1, 6, 0, 0, 0, time.UTC)
+	submitted := "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e04"
+	res := &enrich.Result{
+		FQDN: "jjspy.com", FetchedAt: vtJobTime, Status: enrich.StatusOK,
+		Lookyloo: &enrich.Lookyloo{
+			Instance: "http://citizen-lab.tail399dd.ts.net:5100", CapturesFound: 12, CapturesRead: 2, Truncated: true, Submitted: &submitted,
+			Captures: []enrich.Capture{
+				{UUID: "0b6e7a52-6f0d-4a39-9d0c-3c1b1f6f8a01", Time: at, URL: "https://jjspy.com/", Title: "JJSpy", FinalURL: "https://www.jjspy.com/",
+					Redirects: []string{"https://www.jjspy.com/"}},
+				{UUID: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c03", Time: old, URL: "https://jjspy.com/", FinalURL: "https://jjspy.com/", Redirects: []string{}},
+			},
+			Trackers: []enrich.TrackerSeen{
+				{Kind: "gads", ID: "AW-11021906314", FirstSeen: at, LastSeen: at, Captures: 1},
+				{Kind: "payment", ID: "stripe:pk_live_51HxYzAbCdEf0123456789abcdefghijklmnopqrstuvwxyz", FirstSeen: old, LastSeen: at, Captures: 2},
+			},
+		},
+	}
+	body := renderAs(t, s, "viewer", "domain", map[string]any{
+		"FQDN": "jjspy.com", "Sharing": map[string]uint64{}, "Enrich": &enrichView{Endpoint: "/domains/jjspy.com/enrich", Result: res},
+	})
+	for _, want := range []string{
+		"<h3>Lookyloo</h3>",
+		`2 of 12 captures on <a href="http://citizen-lab.tail399dd.ts.net:5100">http://citizen-lab.tail399dd.ts.net:5100</a>, the latest read`,
+		`submitted <a href="http://citizen-lab.tail399dd.ts.net:5100/tree/` + submitted + `"><code>` + submitted + `</code></a>`,
+		"an absence proves nothing",
+		`<td><a href="http://citizen-lab.tail399dd.ts.net:5100/tree/0b6e7a52-6f0d-4a39-9d0c-3c1b1f6f8a01">JJSpy</a></td>`,
+		`<td><code>https://jjspy.com/</code><br>→ <code>https://www.jjspy.com/</code></td>`,
+		`<td><code>https://www.jjspy.com/</code><br></td>`,
+		`<td><a href="http://citizen-lab.tail399dd.ts.net:5100/tree/9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c03">9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c03</a></td>`,
+		`<td><code>https://jjspy.com/</code></td>`, "<td>—</td>",
+		"<th>Kind</th><th>ID</th><th>First (UTC)</th><th>Last (UTC)</th><th>Captures</th>",
+		"<td>gads</td>\n      <td><code>AW-11021906314</code></td>",
+		"<td><code>stripe:pk_live_51HxYzAbCdEf0123456789abcdefghijklmnopqrstuvwxyz</code></td>",
+		"2026-06-01 06:00:00", "2026-11-13 06:30:20",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("domain page lacks %q", want)
+		}
+	}
+
+	res.Lookyloo = &enrich.Lookyloo{Instance: "http://lookyloo.example", Captures: []enrich.Capture{}, Trackers: []enrich.TrackerSeen{}}
+	body = renderAs(t, s, "viewer", "domain", map[string]any{
+		"FQDN": "jjspy.com", "Sharing": map[string]uint64{}, "Enrich": &enrichView{Endpoint: "/domains/jjspy.com/enrich", Result: res},
+	})
+	if !strings.Contains(body, "No capture of this name.") || strings.Contains(body, "<th>Kind</th>") || strings.Contains(body, "submitted") {
+		t.Error("no capture: wrong Lookyloo section")
 	}
 }
 

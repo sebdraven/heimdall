@@ -213,7 +213,7 @@
 
   const css = getComputedStyle(document.documentElement);
   const color = (name) => css.getPropertyValue(name).trim();
-  const KINDS = ['cert', 'ns_set', 'ip', 'cname', 'mx', 'soa', 'rdap', 'vt'];
+  const KINDS = ['cert', 'tracker', 'ns_set', 'ip', 'cname', 'mx', 'soa', 'rdap', 'vt'];
   const DASHED = new Set(['cert', 'vt', 'soa', 'rdap']);
 
   const nodeType = (n) => {
@@ -279,6 +279,7 @@
           ip: { color: color('--graph-ip') },
           nsset: { color: color('--graph-nsset') },
           cert: { color: color('--cx-cert') },
+          tracker: { color: color('--cx-tracker') },
           soa: { color: color('--cx-soa') },
           registrar: { color: color('--cx-rdap') },
         },

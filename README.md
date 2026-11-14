@@ -239,7 +239,7 @@ graph, domain and rdata pages.
 ## Domain enrichment
 
 An analyst can enrich any name, watched or not, with what Heimdall does not
-collect on its own. Nothing is fetched unless asked for. Four sources run at
+collect on its own. Nothing is fetched unless asked for. Five sources run at
 once:
 
 - DNS: the first enabled resolver of `/admin` is asked A, AAAA, CNAME, NS,
@@ -285,10 +285,59 @@ once:
   passes 500 certificates, the latest being kept.
 - Subdomains: the names below the zone in Heimdall's passive DNS
   (ClickHouse only), with first and last seen, at most 500, latest first.
+- Lookyloo, with `HEIMDALL_LOOKYLOO_URL`: the past captures of the name
+  itself on a self-hosted, open Lookyloo instance (no authentication).
+  `POST {url}/json/hostname_info` with `{"hostname": "<fqdn>", "limit":
+  4 × HEIMDALL_LOOKYLOO_MAX_CAPTURES}` (the answer repeats a capture once per
+  hostnode: one is kept per `capture_uuid`), then, for the
+  `HEIMDALL_LOOKYLOO_MAX_CAPTURES` latest (`truncated` past them), 4
+  captures at a time, `GET {url}/json/<uuid>/info`, `/redirects`,
+  `/hostnames` and `/urls` at once, 20 seconds a request, 90 seconds for the
+  source. Kept per capture: its uuid, time (UTC), URL, title, final URL (the
+  last redirect, else the URL), redirect chain, hostnames and the trackers
+  of its loaded URLs (below), linked to `{url}/tree/<uuid>`. The trackers and
+  hosts of the captures whose URL, redirects or final URL go through the
+  name are gathered with their first and last capture and the number of
+  captures; a capture of another site that merely loads the name is listed
+  but not gathered. A failed route keeps the capture with the error, named
+  `lookyloo <route>: …` (`HTTP 404`, `rate limited, retry after N`, `timed
+  out`, `decode: …` for an HTML answer); only a failed search fails the
+  source. With `HEIMDALL_LOOKYLOO_SUBMIT=true` and no capture younger than
+  `HEIMDALL_LOOKYLOO_MAX_AGE`, `https://<fqdn>/` is submitted unlisted
+  (`POST {url}/submit`), `GET {url}/json/<uuid>/status` is polled every 5
+  seconds for 45 seconds at most, and the new capture is read first. Without
+  `HEIMDALL_LOOKYLOO_URL` the source is not asked: `lookyloo` is `null` and
+  `errors.lookyloo` is `lookyloo not configured`, which does not count in the
+  status.
+
+  Lookyloo only covers what someone captured: a name without capture, or a
+  tracker absent from the captures read, proves nothing.
 
 CT and subdomains search below the zone found by DNS when it lies within the
-registrable domain, else below the registrable domain. RDAP, Cert Spotter
-and ONYPHE are called by `heimdall-api`, with the `User-Agent` `heimdall`.
+registrable domain, else below the registrable domain. RDAP, Cert Spotter,
+ONYPHE and Lookyloo are called by `heimdall-api`, with the `User-Agent`
+`heimdall`.
+
+The trackers are identifiers read from the loaded URLs by one table of rules
+(`internal/enrich/trackers.go`), query parameters parsed, never truncated,
+sorted and unique:
+
+| Kind       | ID                    | Read from |
+|------------|-----------------------|-----------|
+| `ua`       | `UA-<n>-<n>`          | `tid=` of `google-analytics.com/collect` and `/j/collect`; `googletagmanager.com/gtag/js?id=` |
+| `ga4`      | `G-<id>`              | `tid=` of `…/g/collect`; `gtag/js?id=`, `gtag/destination?id=` |
+| `gtm`      | `GTM-<id>`            | `googletagmanager.com/gtm.js?id=` only, never the `gtm=` parameter of other hits |
+| `gads`     | `AW-<n>`              | `gtag/js?id=AW-`, `gtag/destination?id=AW-`; `/pagead/1p-user-list/<n>/`, `/pagead/conversion/<n>/`, `/pagead/viewthroughconversion/<n>/` on `doubleclick.net`, `googleadservices.com`, `google.<suffix>` |
+| `fbpixel`  | `<n>`                 | `connect.facebook.net/signals/config/<n>`; `facebook.com/tr?id=` |
+| `bing_uet` | `<n>`                 | `bat.bing.com/p/action/<n>` |
+| `payment`  | `<provider>[:<merchant>]` | `paddle` (`paddle.com`, `paddle.js`; `vendor`, `seller`), `stripe` (`stripe.com`; a `pk_live_…` parameter), `fastspring` (`<store>.onfastspring.com`, `sites.fastspring.com/<store>`), `2checkout` (`2checkout.com`, `avangate.com`; `merchant`), `paypal` (`paypal.com/sdk/…`; `client-id`) |
+| `clarity`  | `<id>`                | `clarity.ms/tag/<id>` |
+| `crazyegg` | `<n>`                 | `script.crazyegg.com/pages/scripts/<a>/<b>.js` (and `versioned/tracking-scripts`), the digits joined |
+| `hotjar`   | `<n>`                 | `hjid=` on `hotjar.com`; `static.hotjar.com/c/hotjar-<n>.js` |
+| `yandex`   | `<n>`                 | `mc.yandex.ru/watch/<n>` |
+
+A provider named without merchant is left out when a URL of the same
+capture names its merchant.
 
 | Variable                       | Default                        | Meaning                                                |
 |--------------------------------|--------------------------------|--------------------------------------------------------|
@@ -297,6 +346,14 @@ and ONYPHE are called by `heimdall-api`, with the `User-Agent` `heimdall`.
 | `HEIMDALL_ONYPHE_API_KEY`      | empty                          | ONYPHE key, sent as `Authorization: bearer`; empty: no ONYPHE search |
 | `HEIMDALL_ONYPHE_URL`          | `https://www.onyphe.io/api/v2` | ONYPHE API                                             |
 | `HEIMDALL_ONYPHE_CT_WINDOW`    | `-since:48M`                   | OQL time function of the search                        |
+| `HEIMDALL_LOOKYLOO_URL`        | empty                          | Lookyloo instance; empty: no Lookyloo search           |
+| `HEIMDALL_LOOKYLOO_MAX_CAPTURES` | `10`                         | captures read, latest first                            |
+| `HEIMDALL_LOOKYLOO_SUBMIT`     | `false`                        | submit the name when no capture is recent enough       |
+| `HEIMDALL_LOOKYLOO_MAX_AGE`    | `720h`                         | age under which a capture is recent enough             |
+
+`HEIMDALL_LOOKYLOO_URL` must be a name the container resolves: on a
+tailnet, the full MagicDNS name (`http://citizen-lab.tail399dd.ts.net:5100`),
+since the DNS of the containers does not resolve the short ones.
 
 Without a key, the public Cert Spotter API limits the number of requests,
 and each page of a search is one request: enrichments may then fail with
@@ -311,32 +368,46 @@ enrichment in the background, for at most 2 minutes, and answers `202` with
 the state of the job, as the VirusTotal jobs do: one job per name, `GET` on
 the same path (`viewer`) answers its state or `{"state": "none"}`, a
 finished job is kept an hour in memory. A finished job adds `{"status",
-"counts": {"dns", "rdap", "ct", "subdomains"}, "errors", "summary"}`. 400
+"counts": {"dns", "rdap", "ct", "subdomains", "lookyloo"}, "errors",
+"summary"}`, `counts.lookyloo` being the captures read and the summary
+saying `lookyloo: no capture` for none, which is not an error. 400
 `invalid fqdn` unless `{fqdn}` is a valid name. The action is in the audit
 log as `domain.enrich`.
 
 Each source can fail alone: its error is kept and the others are stored.
 The status is `ok`, `partial` (some sources failed) or `error` (all of
-them). The last enrichment of a name replaces the previous one in the
-Postgres table `domain_enrich` (`fqdn`, `fetched_at`, `status`, and the
-`dns`, `zone`, `rdap`, `ct`, `subdomains` and `errors` JSON, a failed source
-being `NULL`).
+them), a Lookyloo not configured left out. The last enrichment of a name
+replaces the previous one in the Postgres table `domain_enrich` (`fqdn`,
+`fetched_at`, `status`, and the `dns`, `zone`, `rdap`, `ct`, `subdomains`,
+`lookyloo` and `errors` JSON, a failed source being `NULL`; CT and Lookyloo
+keep what they read before an error).
 
 `GET /domains/{fqdn}/enrich/data` (`viewer`) returns the stored enrichment,
 `{"fqdn", "fetched_at", "status", "dns", "zone", "rdap", "ct",
-"subdomains", "errors", "graph"}`, 404 before the first one. `graph` is a
+"subdomains", "lookyloo", "errors", "graph"}`, 404 before the first one.
+`lookyloo` is `{"instance", "captures_found", "captures_read",
+"truncated", "submitted", "captures": [{"uuid", "time", "url", "title",
+"final_url", "redirects", "hostnames", "trackers": [{"kind", "id"}]}],
+"trackers": [{"kind", "id", "first_seen", "last_seen", "captures"}],
+"hosts": [{"name", "first_seen", "last_seen"}]}`, `submitted` being the
+uuid of the capture this enrichment asked for, else `null`. `graph` is a
 graph as in Graph view, at most 500 nodes: the name, its addresses (edges
 `A`/`AAAA`, CDN addresses left out and counted), its CNAME and MX targets
 (`CNAME`, `MX`), the NS set of its zone (`NS_SET`, 2 nameservers at least),
-its subdomains (`SUB`) and the names of the certificates (`CERT`, a wildcard
-as its base name).
+its subdomains (`SUB`), the names of the certificates (`CERT`, a wildcard
+as its base name), the host of the final URL of each capture going through
+the name when it differs (`REDIRECT`, unlike `CNAME` an HTTP redirect seen
+by Lookyloo) and its trackers (`TRACKER`, `tracker` nodes).
 
 `/domains/{fqdn}` has an "Enrichment" section after VirusTotal: the date,
 the resolver, the records, the zone (SOA, NS), RDAP, the certificates
 ("Certificate Transparency": count, full SHA-256, issuer, validity,
 revocation, names, sources; "—" for the SHA-256 of an enrichment stored
 before Cert Spotter, and for the sources of one stored before ONYPHE), the
-subdomains, linked to their page, and the error of each failed source. Its
+subdomains, linked to their page, the Lookyloo captures (time, title linked
+to the capture on the instance, URL and final URL, redirect chain) and
+their trackers (kind, full id, first and last capture, captures), and the
+error of each failed source. Its
 "Enrich" button (`analyst`) starts the job, follows it with
 `web/static/vtjob.js` and reloads the page at the end.
 
@@ -571,8 +642,10 @@ share one; when their kinds differ it is dashed grey (`MIXED`). Its tooltip,
 and the properties panel, give the real path, one line per edge: `from → to
 (KIND)`, with the first and last day seen of a `VT` edge. Every edge kind of
 Heimdall has its own colour (`A`/`AAAA` as addresses, `CNAME` grey,
-`NS_SET` as NS sets, `MX`, `CERT`, `SUB` teal, `VT`), none the default
-Pivotick blue.
+`NS_SET` as NS sets, `MX`, `CERT`, `SUB` teal, `REDIRECT` brown, `TRACKER`
+orange as `tracker` nodes, `VT`), none the default Pivotick blue. Between
+two nodes joined by edges of several kinds, the strongest is drawn: `SUB`,
+`TRACKER`, `CNAME`, `REDIRECT`, `A`/`AAAA`, `MX`, `NS_SET`, `CERT`, `VT`.
 
 Clicking a group node opens a side panel over the graph, which stays usable:
 the label of the group and its number of members, a filter on the labels
@@ -605,6 +678,10 @@ takes Bearer tokens.
 `/api/graph/campaign/{id}` holds every domain of the campaign at depth 1,
 plus the names outside the campaign that share a value or an NS set with at
 least two of its domains.
+
+Both then add, for each domain of the graph with a stored enrichment, a
+`TRACKER` edge to each tracker of its Lookyloo captures: two domains sharing
+an identifier meet on its `tracker` node.
 
 Both then add subdomains, unless `?subs=0`:
 
@@ -653,11 +730,13 @@ A node is `{"id", "kind", "label", "watched", "campaign", "href",
 | `domain` | `d:<fqdn>`          | the name      | `/domains/<fqdn>` |
 | `ip`     | `ip:<value>`        | the value     | `/rdata/<value>`  |
 | `nsset`  | `ns:<ns1>,<ns2>`    | `ns1, ns2`    | `/domains/<zone>` |
+| `tracker`| `t:<kind>:<id>`     | `<kind> <id>` | empty             |
 
 The nameservers of an `nsset` are sorted. `watched` and `campaign` come from
 the watchlist. An edge is `{"from", "to", "kind"}`, `kind` being `A`, `AAAA`,
-`CNAME`, `NS_SET`, `SUB` (parent to subdomain) or, with `first_seen` and
-`last_seen`, `VT`; the graph of an enrichment adds `MX` and `CERT` (dashed).
+`CNAME`, `NS_SET`, `SUB` (parent to subdomain), `TRACKER` or, with
+`first_seen` and `last_seen`, `VT`; the graph of an enrichment adds `MX`,
+`CERT` (dashed) and `REDIRECT`.
 Nodes and edges are unique. CDN addresses are left out
 and counted in `excluded_cdn`. A graph stops at 500 nodes, the domains of the
 request first, with `"truncated": true`; it is also set when a pivot query
@@ -742,6 +821,7 @@ read; nothing is looked up.
 | Kind     | Weight   | Evidence |
 |----------|----------|----------|
 | `cert`   | 1.0      | the same `cert_sha256` among the certificates of the stored enrichments (`domain_enrich.ct`); the value is the full SHA-256, the period the validity of the certificate |
+| `tracker`| 0.6–1.0  | the same tracker (kind, id) among the Lookyloo trackers of the stored enrichments (`domain_enrich.lookyloo`); the value is `<kind>:<id>`, the period when both were captured with it. 1.0 for `gads`, `fbpixel`, `bing_uet` and a `payment` with merchant id, 0.9 for `gtm`, `ga4`, `ua`, 0.6 for the other analytics (`clarity`, `crazyegg`, `hotjar`, `yandex`); a `payment` without merchant id is left out |
 | `ns_set` | 0.9      | the same current NS set (at least 2 nameservers, strictly equal) of two different zones |
 | `ip`     | 0.8 / n  | the same non-CDN A or AAAA value in passive DNS over overlapping periods; n counts the watched domains, of any campaign or none, that held the address during the overlap, and the link is dropped past n = 20 (shared hosting) |
 | `cname`  | 0.7      | the same CNAME target, unless a known CDN suffix or its chain in passive DNS ends on a CDN address |
@@ -750,7 +830,8 @@ read; nothing is looked up.
 | `rdap`   | 0.3      | the same registrar (IANA id, else name) and registrations less than 48 h apart, of two different registrable domains (`domain_enrich.rdap`) |
 | `vt`     | 0.3      | a domain VirusTotal saw (`vt_resolutions`) on a non-CDN address another domain held in passive DNS, unless more than 20 watched domains held it |
 
-The weights are constants and the exclusions Go variables at the top of
+The weights are constants (`WeightTracker*` and `TrackerWeight` for the
+trackers) and the exclusions Go variables at the top of
 `internal/correlate/correlate.go`: `CNAMEProviders` (cloudfront.net,
 fastly.net, akamaiedge.net, edgekey.net, b-cdn.net, azureedge.net, cdn77.org,
 cloudflare.net…), `MXProviders` (google.com, googlemail.com, outlook.com,
@@ -799,7 +880,8 @@ linked campaign and an edge per kind of link between two of them, `kind`
 being the kind of link. `expand=a,b` adds the domains of the links between
 `a` and `b` (`member` edges to their campaign) and the values they share
 (`ip`, `nsset`, `domain` for a CNAME target or an MX exchange, `cert` labelled
-with the full SHA-256, `soa`, `registrar`), 404 if a campaign is unknown.
+with the full SHA-256, `tracker` as in Graph view, `soa`, `registrar`), 404
+if a campaign is unknown.
 
 `/correlations`, linked as "Correlations" in the navigation (`viewer`), shows
 the matrix of the linked campaigns (each cell coloured by score, with the
