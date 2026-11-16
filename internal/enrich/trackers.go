@@ -25,6 +25,9 @@ const (
 	TrackerCrazyEgg = "crazyegg"
 	TrackerHotjar   = "hotjar"
 	TrackerYandex   = "yandex"
+	TrackerAdSense  = "adsense"
+	TrackerTwitter  = "twitter"
+	TrackerJivo     = "jivosite"
 )
 
 // Tracker is an identifier found in a loaded URL. A payment is
@@ -50,6 +53,10 @@ var (
 	reCrazyEgg    = regexp.MustCompile(`^/pages/(?:versioned/tracking-scripts|scripts)/((?:\d+/)*\d+)(?:\.js)?(?:/|$)`)
 	reHotjarPath  = regexp.MustCompile(`^/c/hotjar-(\d+)\.js$`)
 	reYandexWatch = regexp.MustCompile(`^/watch/(\d+)(?:/|$)`)
+	reAdSense     = regexp.MustCompile(`^ca-pub-\d{16}$`)
+	reFundingPub  = regexp.MustCompile(`^/i/(?:ca-)?pub-(\d{16})(?:/|$)`)
+	reTwitterTxn  = regexp.MustCompile(`^[0-9a-z]+$`)
+	reJivoWidget  = regexp.MustCompile(`^/widget/([0-9A-Za-z]+)(?:/|$)`)
 )
 
 // trackerRule finds the identifiers of one kind in a URL.
@@ -133,6 +140,29 @@ var trackerRules = []trackerRule{
 	{TrackerYandex, func(u *url.URL) []string {
 		if onHost(u, "mc.yandex.ru", "mc.yandex.com") {
 			return pathID(u, reYandexWatch)
+		}
+		return nil
+	}},
+	{TrackerAdSense, func(u *url.URL) []string {
+		switch {
+		case onHost(u, "googlesyndication.com", "doubleclick.net"):
+			return param(u, "client", reAdSense)
+		case onHost(u, "fundingchoicesmessages.google.com"):
+			if ids := pathID(u, reFundingPub); ids != nil {
+				return []string{"ca-pub-" + ids[0]}
+			}
+		}
+		return nil
+	}},
+	{TrackerTwitter, func(u *url.URL) []string {
+		if onHost(u, "analytics.twitter.com", "t.co", "ads-twitter.com") && strings.TrimSuffix(u.Path, "/") == "/i/adsct" {
+			return param(u, "txn_id", reTwitterTxn)
+		}
+		return nil
+	}},
+	{TrackerJivo, func(u *url.URL) []string {
+		if onHost(u, "code.jivosite.com", "code.jivo.ru", "code.jivo.chat") {
+			return pathID(u, reJivoWidget)
 		}
 		return nil
 	}},

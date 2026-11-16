@@ -335,6 +335,9 @@ sorted and unique:
 | `crazyegg` | `<n>`                 | `script.crazyegg.com/pages/scripts/<a>/<b>.js` (and `versioned/tracking-scripts`), the digits joined |
 | `hotjar`   | `<n>`                 | `hjid=` on `hotjar.com`; `static.hotjar.com/c/hotjar-<n>.js` |
 | `yandex`   | `<n>`                 | `mc.yandex.ru/watch/<n>` |
+| `adsense`  | `ca-pub-<16 digits>`  | `client=` on `googlesyndication.com`, `doubleclick.net`; `fundingchoicesmessages.google.com/i/pub-<n>` and `/i/ca-pub-<n>` |
+| `twitter`  | `<id>`                | `txn_id=` of `/i/adsct` on `analytics.twitter.com`, `t.co`, `ads-twitter.com`; never `uwt.js` alone |
+| `jivosite` | `<id>`                | `code.jivosite.com/widget/<id>`, `code.jivo.ru/widget/<id>`, `code.jivo.chat/widget/<id>` |
 
 A provider named without merchant is left out when a URL of the same
 capture names its merchant.
@@ -821,7 +824,7 @@ read; nothing is looked up.
 | Kind     | Weight   | Evidence |
 |----------|----------|----------|
 | `cert`   | 1.0      | the same `cert_sha256` among the certificates of the stored enrichments (`domain_enrich.ct`); the value is the full SHA-256, the period the validity of the certificate |
-| `tracker`| 0.6–1.0  | the same tracker (kind, id) among the Lookyloo trackers of the stored enrichments (`domain_enrich.lookyloo`); the value is `<kind>:<id>`, the period when both were captured with it. 1.0 for `gads`, `fbpixel`, `bing_uet` and a `payment` with merchant id, 0.9 for `gtm`, `ga4`, `ua`, 0.6 for the other analytics (`clarity`, `crazyegg`, `hotjar`, `yandex`); a `payment` without merchant id is left out |
+| `tracker`| 0.6–1.0  | the same tracker (kind, id) among the Lookyloo trackers of the stored enrichments (`domain_enrich.lookyloo`); the value is `<kind>:<id>`, the period when both were captured with it. 1.0 for `gads`, `fbpixel`, `bing_uet`, `adsense`, `twitter`, `jivosite` and a `payment` with merchant id, 0.9 for `gtm`, `ga4`, `ua`, 0.6 for the other analytics (`clarity`, `crazyegg`, `hotjar`, `yandex`); a `payment` without merchant id is left out |
 | `ns_set` | 0.9      | the same current NS set (at least 2 nameservers, strictly equal) of two different zones |
 | `ip`     | 0.8 / n  | the same non-CDN A or AAAA value in passive DNS over overlapping periods; n counts the watched domains, of any campaign or none, that held the address during the overlap, and the link is dropped past n = 20 (shared hosting) |
 | `cname`  | 0.7      | the same CNAME target, unless a known CDN suffix or its chain in passive DNS ends on a CDN address |

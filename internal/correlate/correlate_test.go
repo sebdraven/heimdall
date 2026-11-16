@@ -366,6 +366,15 @@ func TestTracker(t *testing.T) {
 	}
 }
 
+func TestTrackerAdSense(t *testing.T) {
+	r := compute(Input{Trackers: []Tracker{
+		{Domain: "a1.example", Kind: "adsense", ID: "ca-pub-1234567890123456", FirstSeen: day(0), LastSeen: day(10)},
+		{Domain: "b1.example", Kind: "adsense", ID: "ca-pub-1234567890123456", FirstSeen: day(5), LastSeen: day(20)},
+	}})
+	check(t, "adsense", r,
+		"tracker adsense:ca-pub-1234567890123456 a1.example/1 b1.example/2 1 2026-03-06..2026-03-11")
+}
+
 func TestTrackerWeight(t *testing.T) {
 	for _, tt := range []struct {
 		kind, id string
@@ -375,6 +384,7 @@ func TestTrackerWeight(t *testing.T) {
 		{"payment", "paddle:123456", 1}, {"payment", "stripe:pk_live_51HxYzAbCdEf012345", 1}, {"payment", "stripe", 0},
 		{"gtm", "GTM-5XQ7K2M", 0.9}, {"ga4", "G-8ZK3QW1ABC", 0.9}, {"ua", "UA-132944514-1", 0.9},
 		{"clarity", "k4x9q2p7zm", 0.6}, {"crazyegg", "00117426", 0.6}, {"hotjar", "3456789", 0.6}, {"yandex", "98765432", 0.6},
+		{"adsense", "ca-pub-1234567890123456", 1}, {"twitter", "o1a2b", 1}, {"jivosite", "AbC123xYz", 1},
 		{"unknown", "x", 0},
 	} {
 		if got := TrackerWeight(tt.kind, tt.id); got != tt.want {

@@ -55,6 +55,14 @@ func TestTrackerRules(t *testing.T) {
 		{"Avangate", "https://secure.avangate.com/order/checkout.php?MERCHANT=ACME123", "payment 2checkout:ACME123"},
 		{"PayPal client id", "https://www.paypal.com/sdk/js?client-id=AbC-123_xyz&currency=USD", "payment paypal:AbC-123_xyz"},
 		{"PayPal sandbox", "https://www.paypal.com/sdk/js?client-id=sb", "payment paypal"},
+		{"AdSense script", "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1234567890123456", "adsense ca-pub-1234567890123456"},
+		{"AdSense ads", "https://googleads.g.doubleclick.net/pagead/ads?client=ca-pub-1234567890123456&output=html&h=280", "adsense ca-pub-1234567890123456"},
+		{"AdSense Funding Choices", "https://fundingchoicesmessages.google.com/i/pub-1234567890123456?ers=1", "adsense ca-pub-1234567890123456"},
+		{"AdSense Funding Choices ca-pub", "https://fundingchoicesmessages.google.com/i/ca-pub-1234567890123456/?ers=1", "adsense ca-pub-1234567890123456"},
+		{"X/Twitter adsct", "https://analytics.twitter.com/i/adsct?bci=3&eci=2&p_id=Twitter&txn_id=o1a2b&type=javascript&version=2.3.29", "twitter o1a2b"},
+		{"X/Twitter t.co", "https://t.co/i/adsct/?p_id=Twitter&txn_id=o1a2b", "twitter o1a2b"},
+		{"JivoSite", "https://code.jivosite.com/widget/AbC123xYz", "jivosite AbC123xYz"},
+		{"Jivo ru", "https://code.jivo.ru/widget/AbC123xYz/", "jivosite AbC123xYz"},
 	} {
 		if got := trackerIDs(Trackers([]string{tt.url})); got != tt.want {
 			t.Errorf("%s: %q, want %q", tt.desc, got, tt.want)
@@ -79,6 +87,12 @@ func TestTrackersNoFalsePositive(t *testing.T) {
 		"https://x.example/tr?id=1234567890123456",
 		"https://region1.google-analytics.com/g/collect?v=2&gtm=45je4b70v9101",
 		"https://www.google-analytics.com/j/collect?tid=UA-abc",
+		"https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-",
+		"https://googleads.g.doubleclick.net/pagead/ads?client=ca-video-pub-1234567890123456",
+		"https://x.example/pagead/js/adsbygoogle.js?client=ca-pub-1234567890123456",
+		"https://static.ads-twitter.com/uwt.js",
+		"https://analytics.twitter.com/i/adsct?p_id=Twitter&txn_id=",
+		"https://telemetry.jivosite.com/widget/AbC123xYz",
 		"not a url",
 	} {
 		if got := Trackers([]string{u}); len(got) != 0 {
@@ -111,5 +125,22 @@ func TestTrackersUnique(t *testing.T) {
 	}
 	if got := Trackers(nil); got == nil || len(got) != 0 {
 		t.Errorf("no URL: %#v, want an empty list", got)
+	}
+}
+
+func TestTrackersSellerAccounts(t *testing.T) {
+	got := Trackers([]string{
+		"https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1234567890123456",
+		"https://fundingchoicesmessages.google.com/i/pub-1234567890123456?ers=1",
+		"https://googleads.g.doubleclick.net/pagead/ads?client=ca-pub-1234567890123456",
+		"https://analytics.twitter.com/i/adsct?txn_id=o1a2b",
+		"https://t.co/i/adsct?txn_id=o1a2b",
+		"https://analytics.twitter.com/i/adsct?txn_id=nz9x8",
+		"https://code.jivo.chat/widget/AbC123xYz",
+		"https://code.jivosite.com/widget/AbC123xYz",
+	})
+	want := "adsense ca-pub-1234567890123456, jivosite AbC123xYz, twitter nz9x8, twitter o1a2b"
+	if s := trackerIDs(got); s != want {
+		t.Errorf("trackers %s\nwant     %s", s, want)
 	}
 }
