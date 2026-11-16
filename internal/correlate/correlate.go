@@ -79,7 +79,7 @@ const (
 
 // A tracker weighs by its kind, see TrackerWeight.
 const (
-	// WeightTrackerAccount: an advertising or payment account.
+	// WeightTrackerAccount: an advertising, payment or support chat account.
 	WeightTrackerAccount = 1.0
 	// WeightTrackerGoogle: a Google Analytics or Tag Manager property.
 	WeightTrackerGoogle = 0.9
@@ -90,6 +90,7 @@ const (
 var trackerWeights = map[string]float64{
 	enrich.TrackerGAds: WeightTrackerAccount, enrich.TrackerFBPixel: WeightTrackerAccount,
 	enrich.TrackerBingUET: WeightTrackerAccount, enrich.TrackerPayment: WeightTrackerAccount,
+	enrich.TrackerAdSense: WeightTrackerAccount, enrich.TrackerTwitter: WeightTrackerAccount, enrich.TrackerJivo: WeightTrackerAccount,
 	enrich.TrackerGTM: WeightTrackerGoogle, enrich.TrackerGA4: WeightTrackerGoogle, enrich.TrackerUA: WeightTrackerGoogle,
 	enrich.TrackerClarity: WeightTrackerAnalytics, enrich.TrackerCrazyEgg: WeightTrackerAnalytics,
 	enrich.TrackerHotjar: WeightTrackerAnalytics, enrich.TrackerYandex: WeightTrackerAnalytics,
