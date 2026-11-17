@@ -1,6 +1,7 @@
 package enrich
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"io"
@@ -18,23 +19,28 @@ const (
 	uuidB = "5d2c9e14-8b7a-4c3f-a1e2-7f6d5c4b3a02"
 	uuidC = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c03"
 	uuidS = "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e04"
+	uuidD = "e7f8a9b0-c1d2-4e3f-9a4b-5c6d7e8f9a05"
 )
 
 var lookylooNow = time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 
 // fakeLookyloo answers the routes measured on the instance; any other is
-// a 404 HTML page, as /json/<uuid>/ips is there.
+// a 404 HTML page, as /json/<uuid>/ips is there. hostname_info answers
+// hitsFor the name searched, else hits; a name in slow is answered after
+// that delay, and codes["hostname_info <name>"] fails its search alone.
 type fakeLookyloo struct {
 	t          *testing.T
 	mu         sync.Mutex
 	hits       string
+	hitsFor    map[string]string
+	slow       map[string]time.Duration
 	routes     map[string]string
 	codes      map[string]int
 	html       map[string]bool
 	retryAfter string
 	submit     string
 	statuses   []string
-	search     string
+	searches   []string
 	submits    []string
 	asked      []string
 }
@@ -42,7 +48,7 @@ type fakeLookyloo struct {
 const notFoundHTML = "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n"
 
 func newFakeLookyloo(t *testing.T) *fakeLookyloo {
-	return &fakeLookyloo{t: t, routes: map[string]string{}, codes: map[string]int{}, html: map[string]bool{}}
+	return &fakeLookyloo{t: t, hitsFor: map[string]string{}, slow: map[string]time.Duration{}, routes: map[string]string{}, codes: map[string]int{}, html: map[string]bool{}}
 }
 
 func (f *fakeLookyloo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -50,20 +56,43 @@ func (f *fakeLookyloo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if ua := r.Header.Get("User-Agent"); ua != "heimdall" {
 		f.t.Errorf("User-Agent %q", ua)
 	}
+	isSearch := r.Method == http.MethodPost && r.URL.Path == "/json/hostname_info"
+	var search struct {
+		Hostname string `json:"hostname"`
+	}
+	if isSearch {
+		_ = json.Unmarshal(body, &search)
+	}
+	f.mu.Lock()
+	f.asked = append(f.asked, r.Method+" "+r.URL.Path)
+	if isSearch {
+		f.searches = append(f.searches, string(body))
+	}
+	slow := f.slow[search.Hostname]
+	f.mu.Unlock()
+	if slow > 0 {
+		select {
+		case <-time.After(slow):
+		case <-r.Context().Done():
+		}
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.asked = append(f.asked, r.Method+" "+r.URL.Path)
 	key := strings.TrimPrefix(r.URL.Path, "/json/")
 	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/json/hostname_info":
-		f.search = string(body)
+	case isSearch:
 	case r.Method == http.MethodPost && r.URL.Path == "/submit":
 		f.submits = append(f.submits, string(body))
 		key = "submit"
 	case r.Method != http.MethodGet:
 		key = ""
 	}
-	if code := f.codes[key]; code != 0 {
+	code := f.codes[key]
+	if isSearch {
+		code = cmp.Or(f.codes[key+" "+search.Hostname], code)
+	}
+	if code != 0 {
 		if f.retryAfter != "" {
 			w.Header().Set("Retry-After", f.retryAfter)
 		}
@@ -78,7 +107,7 @@ func (f *fakeLookyloo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	answer, ok := f.routes[key]
 	switch {
 	case key == "hostname_info":
-		answer, ok = f.hits, true
+		answer, ok = cmp.Or(f.hitsFor[search.Hostname], f.hits), true
 	case key == "submit":
 		answer, ok = f.submit, true
 	case strings.HasSuffix(key, "/status") && len(f.statuses) > 0:
@@ -149,7 +178,7 @@ func lookylooClient(t *testing.T, f *fakeLookyloo, maxCaptures int, submit bool)
 	t.Helper()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	c := NewLookylooClient(srv.URL+"/", maxCaptures, submit, DefaultLookylooMaxAge)
+	c := NewLookylooClient(srv.URL+"/", maxCaptures, submit, DefaultLookylooMaxAge, 0, 0)
 	c.Now = func() time.Time { return lookylooNow }
 	c.PollEvery = time.Millisecond
 	return c
@@ -163,10 +192,11 @@ func captureUUIDs(l *Lookyloo) []string {
 	return out
 }
 
-func (f *fakeLookyloo) requests() (search string, submits []string) {
+// requests returns the searches, sorted, and the submissions.
+func (f *fakeLookyloo) requests() (searches, submits []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.search, slices.Clone(f.submits)
+	return slices.Sorted(slices.Values(f.searches)), slices.Clone(f.submits)
 }
 
 func (f *fakeLookyloo) askedMatching(substr string) int {
@@ -188,8 +218,8 @@ func TestLookylooCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if search, _ := f.requests(); search != `{"hostname":"jjspy.com","limit":40}` {
-		t.Errorf("search %s, want limit 4 × MaxCaptures", search)
+	if searches, _ := f.requests(); !slices.Equal(searches, []string{`{"hostname":"jjspy.com","limit":40}`, `{"hostname":"www.jjspy.com","limit":40}`}) {
+		t.Errorf("searches %s, want the name and its www twin, limit 4 × MaxCaptures", searches)
 	}
 	if l.Instance != c.BaseURL || strings.HasSuffix(l.Instance, "/") || l.CapturesFound != 3 || l.CapturesRead != 3 || l.Truncated || l.Submitted != nil {
 		t.Errorf("lookyloo %+v", l)
@@ -262,8 +292,8 @@ func TestLookylooMaxCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if search, _ := f.requests(); search != `{"hostname":"jjspy.com","limit":8}` {
-		t.Errorf("search %s", search)
+	if searches, _ := f.requests(); !slices.Equal(searches, []string{`{"hostname":"jjspy.com","limit":8}`, `{"hostname":"www.jjspy.com","limit":8}`}) {
+		t.Errorf("searches %s", searches)
 	}
 	if !l.Truncated || l.CapturesFound != 3 || l.CapturesRead != 2 || !slices.Equal(captureUUIDs(l), []string{uuidA, uuidB}) {
 		t.Errorf("lookyloo %+v, want the 2 latest, truncated", l)
@@ -319,13 +349,14 @@ func TestLookylooPartial(t *testing.T) {
 
 	f = jjspyInstance(t)
 	f.codes["hostname_info"], f.retryAfter = http.StatusTooManyRequests, "30"
-	if l, err := lookylooClient(t, f, 10, false).Captures(context.Background(), "jjspy.com"); l != nil || err == nil || err.Error() != "lookyloo hostname_info: rate limited, retry after 30" {
+	if l, err := lookylooClient(t, f, 10, false).Captures(context.Background(), "jjspy.com"); l != nil || err == nil ||
+		err.Error() != "lookyloo hostname_info jjspy.com: rate limited, retry after 30; lookyloo hostname_info www.jjspy.com: rate limited, retry after 30" {
 		t.Errorf("search rate limited: %+v, %v", l, err)
 	}
 
 	f = jjspyInstance(t)
 	f.html["hostname_info"] = true
-	if l, err := lookylooClient(t, f, 10, false).Captures(context.Background(), "jjspy.com"); l != nil || err == nil || !strings.HasPrefix(err.Error(), "lookyloo hostname_info: decode: ") {
+	if l, err := lookylooClient(t, f, 10, false).Captures(context.Background(), "jjspy.com"); l != nil || err == nil || !strings.HasPrefix(err.Error(), "lookyloo hostname_info jjspy.com: decode: ") {
 		t.Errorf("search answered HTML: %+v, %v", l, err)
 	}
 }
@@ -404,6 +435,124 @@ func TestLookylooSubmitForms(t *testing.T) {
 	} {
 		if got := captureDone(json.RawMessage(tt.status)); got != tt.done {
 			t.Errorf("captureDone(%s) = %v", tt.status, got)
+		}
+	}
+}
+
+const (
+	atD    = "2026-08-15T09:00:00.000000+00:00"
+	fbConf = "https://connect.facebook.net/signals/config/1234567890123456"
+)
+
+// twinInstance is jjspyInstance where jjspy.com has A and C and
+// www.jjspy.com has D and A, D loading a Meta pixel.
+func twinInstance(t *testing.T) *fakeLookyloo {
+	f := jjspyInstance(t)
+	f.hitsFor["jjspy.com"] = mustJSON(t, []map[string]any{hit(uuidA, atA, "JJSpy", "h1"), hit(uuidC, atC, "JJSpy", "h2"), hit(uuidA, atA, "JJSpy", "h3")})
+	f.hitsFor["www.jjspy.com"] = mustJSON(t, []map[string]any{hit(uuidD, atD, "Pricing", "h4"), hit(uuidA, atA, "JJSpy", "h5")})
+	f.capture(uuidD, "https://www.jjspy.com/pricing", "Pricing", atD, []string{},
+		[]string{"www.jjspy.com", "connect.facebook.net"}, []string{"https://www.jjspy.com/pricing", fbConf})
+	return f
+}
+
+func TestLookylooWWWTwin(t *testing.T) {
+	f := twinInstance(t)
+	l, err := lookylooClient(t, f, 10, false).Captures(context.Background(), "jjspy.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := captureUUIDs(l); l.CapturesFound != 3 || l.CapturesRead != 3 || l.Truncated || !slices.Equal(got, []string{uuidA, uuidD, uuidC}) {
+		t.Errorf("captures %v of %+v, want A, D and C once each, latest first", got, l)
+	}
+	if n := f.askedMatching(uuidA + "/"); n != 4 {
+		t.Errorf("asked %d routes of the capture both names have, want 4", n)
+	}
+	if !slices.ContainsFunc(l.Trackers, func(s TrackerSeen) bool {
+		return s.Kind == TrackerFBPixel && s.ID == "1234567890123456" && s.Captures == 1
+	}) {
+		t.Errorf("trackers %+v, want the pixel of the www.jjspy.com capture", l.Trackers)
+	}
+
+	f = twinInstance(t)
+	var rows []map[string]any
+	for range 6 {
+		rows = append(rows, hit(uuidD, atD, "Pricing"), hit(uuidA, atA, "JJSpy"))
+	}
+	f.hitsFor["www.jjspy.com"] = mustJSON(t, rows)
+	l, err = lookylooClient(t, f, 3, false).Captures(context.Background(), "jjspy.com")
+	if err != nil || !l.Truncated || l.CapturesFound != 3 || l.CapturesRead != 3 {
+		t.Errorf("www.jjspy.com search at its limit: %+v, %v, want truncated", l, err)
+	}
+
+	f = twinInstance(t)
+	f.hitsFor["jjspy.com"] = "[]"
+	f.hitsFor["www.jjspy.com"] = mustJSON(t, []map[string]any{hit(uuidD, atD, "Pricing")})
+	l, err = lookylooClient(t, f, 10, false).Captures(context.Background(), "jjspy.com")
+	if err != nil || l.CapturesFound != 1 || !slices.Equal(captureUUIDs(l), []string{uuidD}) || len(l.Trackers) != 1 || l.Trackers[0].Kind != TrackerFBPixel {
+		t.Errorf("only www.jjspy.com captured: %+v, %v, want its capture and its pixel", l, err)
+	}
+
+	f = twinInstance(t)
+	f.hitsFor["www.jjspy.com"] = "[]"
+	l, err = lookylooClient(t, f, 10, false).Captures(context.Background(), "www.jjspy.com")
+	if searches, _ := f.requests(); !slices.Equal(searches, []string{`{"hostname":"jjspy.com","limit":40}`, `{"hostname":"www.jjspy.com","limit":40}`}) {
+		t.Errorf("searches %s, want www.jjspy.com and jjspy.com", searches)
+	}
+	if err != nil || !slices.Equal(captureUUIDs(l), []string{uuidA, uuidC}) || len(l.Trackers) != 2 {
+		t.Errorf("www.jjspy.com: %+v, %v, want the captures of jjspy.com and their trackers", l, err)
+	}
+}
+
+// timedClient reads f within the source and request timeouts given.
+func timedClient(t *testing.T, f *fakeLookyloo, timeout, requestTimeout time.Duration) *LookylooClient {
+	t.Helper()
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	c := NewLookylooClient(srv.URL, 10, false, DefaultLookylooMaxAge, timeout, requestTimeout)
+	c.Now = func() time.Time { return lookylooNow }
+	return c
+}
+
+func TestLookylooSearchFails(t *testing.T) {
+	f := jjspyInstance(t)
+	f.slow["www.jjspy.com"] = 5 * time.Second
+	l, err := timedClient(t, f, 0, 200*time.Millisecond).Captures(context.Background(), "jjspy.com")
+	if err == nil || err.Error() != "lookyloo hostname_info www.jjspy.com: timed out" {
+		t.Errorf("err %v, want the slow search named", err)
+	}
+	if l == nil || l.CapturesRead != 3 || !slices.Equal(captureUUIDs(l), []string{uuidA, uuidB, uuidC}) {
+		t.Errorf("lookyloo %+v, want the captures of jjspy.com", l)
+	}
+
+	f = jjspyInstance(t)
+	f.slow["www.jjspy.com"] = 5 * time.Second
+	f.codes["hostname_info jjspy.com"] = http.StatusBadGateway
+	l, err = timedClient(t, f, 0, 200*time.Millisecond).Captures(context.Background(), "jjspy.com")
+	if l != nil || err == nil || err.Error() != "lookyloo hostname_info jjspy.com: HTTP 502; lookyloo hostname_info www.jjspy.com: timed out" {
+		t.Errorf("both searches failed: %+v, %v, want the source failed", l, err)
+	}
+}
+
+func TestLookylooTimeouts(t *testing.T) {
+	if c := NewLookylooClient("http://lookyloo.example", 10, false, DefaultLookylooMaxAge, 0, 0); c.HTTP.Timeout != DefaultLookylooRequestTimeout || c.Timeout != 0 {
+		t.Errorf("request timeout %s, timeout %s, want the defaults", c.HTTP.Timeout, c.Timeout)
+	}
+	for _, tt := range []struct {
+		desc                    string
+		timeout, requestTimeout time.Duration
+	}{
+		{"request timeout", 0, 100 * time.Millisecond},
+		{"source timeout", 100 * time.Millisecond, 0},
+	} {
+		f := jjspyInstance(t)
+		f.slow["jjspy.com"], f.slow["www.jjspy.com"] = 5*time.Second, 5*time.Second
+		start := time.Now()
+		l, err := timedClient(t, f, tt.timeout, tt.requestTimeout).Captures(context.Background(), "jjspy.com")
+		if l != nil || err == nil || err.Error() != "lookyloo hostname_info jjspy.com: timed out; lookyloo hostname_info www.jjspy.com: timed out" {
+			t.Errorf("%s: %+v, %v", tt.desc, l, err)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("%s: answered after %s", tt.desc, d)
 		}
 	}
 }

@@ -292,17 +292,23 @@ once:
   hostnode: one is kept per `capture_uuid`), then, for the
   `HEIMDALL_LOOKYLOO_MAX_CAPTURES` latest (`truncated` past them), 4
   captures at a time, `GET {url}/json/<uuid>/info`, `/redirects`,
-  `/hostnames` and `/urls` at once, 20 seconds a request, 90 seconds for the
-  source. Kept per capture: its uuid, time (UTC), URL, title, final URL (the
-  last redirect, else the URL), redirect chain, hostnames and the trackers
-  of its loaded URLs (below), linked to `{url}/tree/<uuid>`. The trackers and
-  hosts of the captures whose URL, redirects or final URL go through the
-  name are gathered with their first and last capture and the number of
-  captures; a capture of another site that merely loads the name is listed
-  but not gathered. A failed route keeps the capture with the error, named
+  `/hostnames` and `/urls` at once, `HEIMDALL_LOOKYLOO_REQUEST_TIMEOUT` a
+  request, `HEIMDALL_LOOKYLOO_TIMEOUT` for the source. The name and its www
+  form (`x` and `www.x`, or `www.x` and `x`) are both searched, at once, and
+  their captures merged: one per `capture_uuid`, latest first, `truncated`
+  also when either search reaches its limit. Kept per capture: its uuid,
+  time (UTC), URL, title, final URL (the last redirect, else the URL),
+  redirect chain, hostnames and the trackers of its loaded URLs (below),
+  linked to `{url}/tree/<uuid>`. The trackers and hosts of the captures
+  whose URL, redirects or final URL go through the name or its www form are
+  gathered with their first and last capture and the number of captures; a
+  capture of another site that merely loads the name is listed but not
+  gathered. A failed route keeps the capture with the error, named
   `lookyloo <route>: …` (`HTTP 404`, `rate limited, retry after N`, `timed
-  out`, `decode: …` for an HTML answer); only a failed search fails the
-  source. With `HEIMDALL_LOOKYLOO_SUBMIT=true` and no capture younger than
+  out`, `decode: …` for an HTML answer). A failed search keeps the captures
+  of the other with its error, named `lookyloo hostname_info <name>: …`; the
+  source fails only when both searches do. With
+  `HEIMDALL_LOOKYLOO_SUBMIT=true` and no capture younger than
   `HEIMDALL_LOOKYLOO_MAX_AGE`, `https://<fqdn>/` is submitted unlisted
   (`POST {url}/submit`), `GET {url}/json/<uuid>/status` is polled every 5
   seconds for 45 seconds at most, and the new capture is read first. Without
@@ -353,6 +359,8 @@ capture names its merchant.
 | `HEIMDALL_LOOKYLOO_MAX_CAPTURES` | `10`                         | captures read, latest first                            |
 | `HEIMDALL_LOOKYLOO_SUBMIT`     | `false`                        | submit the name when no capture is recent enough       |
 | `HEIMDALL_LOOKYLOO_MAX_AGE`    | `720h`                         | age under which a capture is recent enough             |
+| `HEIMDALL_LOOKYLOO_TIMEOUT`    | `100s`                         | bound of the Lookyloo source: below the 2 minutes of the enrichment job, at least `HEIMDALL_LOOKYLOO_REQUEST_TIMEOUT` |
+| `HEIMDALL_LOOKYLOO_REQUEST_TIMEOUT` | `45s`                     | bound of one Lookyloo request, each search included    |
 
 `HEIMDALL_LOOKYLOO_URL` must be a name the container resolves: on a
 tailnet, the full MagicDNS name (`http://citizen-lab.tail399dd.ts.net:5100`),

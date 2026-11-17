@@ -21,12 +21,13 @@ const (
 	DefaultLookylooMaxCaptures = 10
 	DefaultLookylooMaxAge      = 720 * time.Hour
 
-	// lookylooTimeout bounds the source within the 2 minutes of the job:
-	// without a submission, a search then 3 rounds of 4 captures at 20
-	// seconds a request at worst.
-	lookylooTimeout        = 90 * time.Second
-	lookylooRequestTimeout = 20 * time.Second
-	lookylooParallel       = 4
+	// DefaultLookylooTimeout bounds the source below the 2 minutes of the
+	// job. A request gets DefaultLookylooRequestTimeout: hostname_info is
+	// slow on a name with many captures. Captures not read in time are left
+	// out, truncated set.
+	DefaultLookylooTimeout        = 100 * time.Second
+	DefaultLookylooRequestTimeout = 45 * time.Second
+	lookylooParallel              = 4
 	// lookylooSearchFactor: hostname_info answers one row per capture and
 	// hostnode.
 	lookylooSearchFactor = 4
@@ -102,15 +103,24 @@ func (l *Lookyloo) TreeURL(uuid string) string {
 	return l.Instance + "/tree/" + url.PathEscape(uuid)
 }
 
-// Visits reports whether fqdn is the host of the URL, a redirect or the
-// final URL of c.
+// Visits reports whether fqdn or its www twin is the host of the URL, a
+// redirect or the final URL of c.
 func (c Capture) Visits(fqdn string) bool {
+	names := lookylooNames(fqdn)
 	for _, u := range append([]string{c.URL, c.FinalURL}, c.Redirects...) {
-		if URLHost(u) == fqdn {
+		if slices.Contains(names, URLHost(u)) {
 			return true
 		}
 	}
 	return false
+}
+
+// lookylooNames is fqdn and its www twin: x and www.x, www.x and x.
+func lookylooNames(fqdn string) []string {
+	if bare, ok := strings.CutPrefix(fqdn, "www."); ok {
+		return []string{fqdn, bare}
+	}
+	return []string{fqdn, "www." + fqdn}
 }
 
 // URLHost returns the host of a URL, lowercased, without final dot.
@@ -124,20 +134,23 @@ func URLHost(raw string) string {
 
 // LookylooClient reads the captures of an open Lookyloo instance and, with
 // Submit, captures a name none of whose captures is younger than MaxAge.
+// Timeout bounds the source, the Timeout of HTTP a request.
 type LookylooClient struct {
 	HTTP        *http.Client
 	BaseURL     string
 	MaxCaptures int
 	Submit      bool
 	MaxAge      time.Duration
+	Timeout     time.Duration
 	PollEvery   time.Duration
 	Now         func() time.Time
 }
 
-func NewLookylooClient(baseURL string, maxCaptures int, submit bool, maxAge time.Duration) *LookylooClient {
+// NewLookylooClient takes the defaults for a zero timeout or requestTimeout.
+func NewLookylooClient(baseURL string, maxCaptures int, submit bool, maxAge, timeout, requestTimeout time.Duration) *LookylooClient {
 	return &LookylooClient{
-		HTTP: &http.Client{Timeout: lookylooRequestTimeout}, BaseURL: strings.TrimSuffix(baseURL, "/"),
-		MaxCaptures: maxCaptures, Submit: submit, MaxAge: maxAge, PollEvery: lookylooPollEvery,
+		HTTP: &http.Client{Timeout: cmp.Or(requestTimeout, DefaultLookylooRequestTimeout)}, BaseURL: strings.TrimSuffix(baseURL, "/"),
+		MaxCaptures: maxCaptures, Submit: submit, MaxAge: maxAge, Timeout: timeout, PollEvery: lookylooPollEvery,
 	}
 }
 
@@ -147,21 +160,43 @@ type lookylooHit struct {
 	Title string `json:"title"`
 }
 
-// Captures reads the MaxCaptures latest captures of fqdn, 4 at a time, in
-// 90 seconds. A capture of which a part failed is kept with the error,
-// which names its route; the source fails only when the search does.
+// Captures reads the MaxCaptures latest captures of fqdn and its www twin,
+// searched at once, 4 at a time, within Timeout. A capture of which a part
+// failed is kept with the error, which names its route; a failed search is
+// kept with the error, which names its name. The source fails only when
+// both searches do.
 func (c *LookylooClient) Captures(ctx context.Context, fqdn string) (*Lookyloo, error) {
-	ctx, cancel := context.WithTimeout(ctx, lookylooTimeout)
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(c.Timeout, DefaultLookylooTimeout))
 	defer cancel()
 	maxCaptures := cmp.Or(max(c.MaxCaptures, 0), DefaultLookylooMaxCaptures)
 	limit := lookylooSearchFactor * maxCaptures
-	var hits []lookylooHit
-	if err := postJSON(ctx, c.HTTP, c.BaseURL+"/json/hostname_info", map[string]any{"hostname": fqdn, "limit": limit}, maxLookylooBody, &hits); err != nil {
-		return nil, lookylooError("hostname_info", err)
+	names := lookylooNames(fqdn)
+	hits := make([][]lookylooHit, len(names))
+	failed := make([]error, len(names))
+	var searches sync.WaitGroup
+	for i, name := range names {
+		searches.Go(func() {
+			if err := postJSON(ctx, c.HTTP, c.BaseURL+"/json/hostname_info", map[string]any{"hostname": name, "limit": limit}, maxLookylooBody, &hits[i]); err != nil {
+				failed[i] = lookylooError("hostname_info "+name, err)
+			}
+		})
 	}
-	found := uniqueCaptures(hits)
-	out := &Lookyloo{Instance: c.BaseURL, CapturesFound: len(found), Truncated: len(hits) >= limit}
+	searches.Wait()
 	errs := errorSet{}
+	errs.add(failed...)
+	if !slices.Contains(failed, nil) {
+		return nil, errs.err()
+	}
+	var merged []lookylooHit
+	truncated := false
+	for i := range names {
+		if failed[i] == nil {
+			merged = append(merged, hits[i]...)
+			truncated = truncated || len(hits[i]) >= limit
+		}
+	}
+	found := uniqueCaptures(merged)
+	out := &Lookyloo{Instance: c.BaseURL, CapturesFound: len(found), Truncated: truncated}
 	if c.Submit && !anyAfter(found, c.now().Add(-cmp.Or(c.MaxAge, DefaultLookylooMaxAge))) {
 		sub, err := c.submit(ctx, fqdn)
 		errs.add(err)
@@ -399,7 +434,7 @@ func statusDone(v json.RawMessage) bool {
 }
 
 // finish orders the captures and gathers the trackers and hosts of those
-// that visit fqdn.
+// that visit fqdn or its www twin.
 func (l *Lookyloo) finish(fqdn string) {
 	if l.Captures == nil {
 		l.Captures = []Capture{}

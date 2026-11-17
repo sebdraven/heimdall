@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sebdraven/heimdall/internal/cdn"
+	"github.com/sebdraven/heimdall/internal/config"
 	"github.com/sebdraven/heimdall/internal/enrich"
 	"github.com/sebdraven/heimdall/internal/resolver"
 	"github.com/sebdraven/heimdall/internal/store/ch"
@@ -17,7 +18,7 @@ import (
 )
 
 const (
-	enrichJobTimeout = 2 * time.Minute
+	enrichJobTimeout = config.EnrichJobTimeout
 	enrichSaveTime   = 10 * time.Second
 )
 
