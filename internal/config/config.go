@@ -12,6 +12,10 @@ import (
 
 const prefix = "HEIMDALL_"
 
+// EnrichJobTimeout bounds a domain enrichment; the Lookyloo source ends
+// before it.
+const EnrichJobTimeout = 2 * time.Minute
+
 type Config struct {
 	PGDSN string
 
@@ -45,10 +49,12 @@ type Config struct {
 	OnypheCTWindow    string
 
 	// LookylooURL empty disables the Lookyloo source.
-	LookylooURL         string
-	LookylooMaxCaptures int
-	LookylooSubmit      bool
-	LookylooMaxAge      time.Duration
+	LookylooURL            string
+	LookylooMaxCaptures    int
+	LookylooSubmit         bool
+	LookylooMaxAge         time.Duration
+	LookylooTimeout        time.Duration
+	LookylooRequestTimeout time.Duration
 
 	LogLevel slog.Level
 }
@@ -87,10 +93,12 @@ func Load() (*Config, error) {
 		OnypheURL:         p.str("ONYPHE_URL", "https://www.onyphe.io/api/v2"),
 		OnypheCTWindow:    p.str("ONYPHE_CT_WINDOW", "-since:48M"),
 
-		LookylooURL:         p.str("LOOKYLOO_URL", ""),
-		LookylooMaxCaptures: p.int("LOOKYLOO_MAX_CAPTURES", 10),
-		LookylooSubmit:      p.bool("LOOKYLOO_SUBMIT", false),
-		LookylooMaxAge:      p.duration("LOOKYLOO_MAX_AGE", 720*time.Hour),
+		LookylooURL:            p.str("LOOKYLOO_URL", ""),
+		LookylooMaxCaptures:    p.int("LOOKYLOO_MAX_CAPTURES", 10),
+		LookylooSubmit:         p.bool("LOOKYLOO_SUBMIT", false),
+		LookylooMaxAge:         p.duration("LOOKYLOO_MAX_AGE", 720*time.Hour),
+		LookylooTimeout:        p.duration("LOOKYLOO_TIMEOUT", 100*time.Second),
+		LookylooRequestTimeout: p.duration("LOOKYLOO_REQUEST_TIMEOUT", 45*time.Second),
 
 		LogLevel: p.level("LOG_LEVEL", slog.LevelInfo),
 	}
@@ -110,6 +118,14 @@ func Load() (*Config, error) {
 	p.positive("VT_TTL", int(c.VTTTL))
 	p.positive("LOOKYLOO_MAX_CAPTURES", c.LookylooMaxCaptures)
 	p.positive("LOOKYLOO_MAX_AGE", int(c.LookylooMaxAge))
+	p.positive("LOOKYLOO_TIMEOUT", int(c.LookylooTimeout))
+	p.positive("LOOKYLOO_REQUEST_TIMEOUT", int(c.LookylooRequestTimeout))
+	if c.LookylooTimeout >= EnrichJobTimeout {
+		p.fail("LOOKYLOO_TIMEOUT", fmt.Errorf("must be below the %s of the enrichment job", EnrichJobTimeout))
+	}
+	if c.LookylooTimeout < c.LookylooRequestTimeout {
+		p.fail("LOOKYLOO_TIMEOUT", fmt.Errorf("must be at least %sLOOKYLOO_REQUEST_TIMEOUT (%s)", prefix, c.LookylooRequestTimeout))
+	}
 	if err := errors.Join(p.errs...); err != nil {
 		return nil, err
 	}
