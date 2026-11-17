@@ -122,7 +122,8 @@ func newServer(cfg *config.Config, log *slog.Logger, pgs *pg.Store, chs *ch.Stor
 		DNS: resolver.New(enrich.DNSTimeout), RDAP: enrich.NewRDAPClient(), CT: ct, PDNS: chs,
 	}
 	if cfg.LookylooURL != "" {
-		s.enrich.Lookyloo = enrich.NewLookylooClient(cfg.LookylooURL, cfg.LookylooMaxCaptures, cfg.LookylooSubmit, cfg.LookylooMaxAge)
+		s.enrich.Lookyloo = enrich.NewLookylooClient(cfg.LookylooURL, cfg.LookylooMaxCaptures, cfg.LookylooSubmit, cfg.LookylooMaxAge,
+			cfg.LookylooTimeout, cfg.LookylooRequestTimeout)
 	}
 	s.enrichJobs, s.enrichDB, s.links, s.subdomains = newJobs[enrichSummary](), pgs, pgs, pgs
 	s.corr = correlationStores{chs, pgs}
